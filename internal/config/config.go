@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +23,21 @@ type Config struct {
 	AnnouncementSpaces []string `yaml:"announcement_spaces,omitempty"`
 	IgnorePrefixes     []string `yaml:"ignore_prefixes,omitempty"`
 	Concurrency        int      `yaml:"concurrency,omitempty"`
+}
+
+// ExpandHome replaces a leading "~/" with the user's home directory.
+func ExpandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // DefaultConfigPath returns $XDG_CONFIG_HOME/gchat-mentions/config.yaml or ~/.config/gchat-mentions/config.yaml.
@@ -55,6 +71,12 @@ func Load(path string) (*Config, error) {
 	if !explicit {
 		var err error
 		path, err = DefaultConfigPath()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		path, err = ExpandHome(path)
 		if err != nil {
 			return nil, err
 		}
@@ -105,7 +127,7 @@ announcement_spaces: []
 ignore_prefixes: []
 `
 
-// WriteStarter writes a starter config file if it does not already exist.
+// WriteStarter atomically creates a starter config file if it does not already exist.
 // Returns true if the file was created, false if it already existed.
 func WriteStarter(path string) (bool, error) {
 	if path == "" {
@@ -114,18 +136,32 @@ func WriteStarter(path string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-	}
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("stat config %s: %w", path, err)
+	} else {
+		var err error
+		path, err = ExpandHome(path)
+		if err != nil {
+			return false, err
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(starterConfigTemplate), 0o600); err != nil {
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("create config %s: %w", path, err)
+	}
+	if _, err := f.WriteString(starterConfigTemplate); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return false, fmt.Errorf("write config %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return false, fmt.Errorf("close config %s: %w", path, err)
 	}
 	return true, nil
 }

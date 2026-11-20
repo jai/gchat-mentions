@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fix-and-lint-cli
+        name: fix and lint cli
+        entry: bash -c 'make fix FILES="$*" && make lint-cli' --
+        language: system
+        types: [go]
+        stages: [pre-commit]
+      - id: test-unit-cli
+        name: test unit cli
+        entry: make test-unit-cli
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

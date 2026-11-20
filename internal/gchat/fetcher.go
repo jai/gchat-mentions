@@ -27,7 +27,6 @@ type Message struct {
 	Thread    string    `json:"thread"`
 	Link      string    `json:"link,omitempty"`
 	Unread    bool      `json:"unread"`
-	Category  string    `json:"category,omitempty"`
 }
 
 // FetchOptions controls message fetching.
@@ -141,14 +140,19 @@ func parseSpacesPlain(output string) []Space {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	var spaces []Space
 	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
 		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) < 3 || parts[0] == "RESOURCE" {
+		if len(parts) < 3 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		if id == "" || id == "RESOURCE" {
 			continue
 		}
 		spaces = append(spaces, Space{
-			ID:   parts[0],
-			Name: parts[1],
-			Type: parts[2],
+			ID:   id,
+			Name: strings.TrimSpace(parts[1]),
+			Type: strings.TrimSpace(parts[2]),
 		})
 	}
 	return spaces

@@ -4,11 +4,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
-)
-
-const (
-	CategoryImmediateResponse = "immediate_response"
-	CategoryAnnouncement      = "announcement"
+	"unicode/utf8"
 )
 
 // SpaceMentions holds unread mentions for a single space.
@@ -66,18 +62,32 @@ func containsWord(text, word string) bool {
 	if target == "" {
 		return false
 	}
-	for i := 0; i <= len(lower)-len(target); i++ {
-		if lower[i:i+len(target)] != target {
-			continue
+	for offset := 0; offset <= len(lower)-len(target); {
+		idx := strings.Index(lower[offset:], target)
+		if idx < 0 {
+			return false
 		}
-		if i > 0 && isWordChar(rune(lower[i-1])) {
-			continue
+		start := offset + idx
+		end := start + len(target)
+
+		leftOK := true
+		if start > 0 {
+			prev, _ := utf8.DecodeLastRuneInString(lower[:start])
+			leftOK = !isWordChar(prev)
 		}
-		end := i + len(target)
-		if end < len(lower) && isWordChar(rune(lower[end])) {
-			continue
+		rightOK := true
+		if end < len(lower) {
+			next, _ := utf8.DecodeRuneInString(lower[end:])
+			rightOK = !isWordChar(next)
 		}
-		return true
+		if leftOK && rightOK {
+			return true
+		}
+		_, width := utf8.DecodeRuneInString(lower[start:])
+		if width <= 0 {
+			width = 1
+		}
+		offset = start + width
 	}
 	return false
 }

@@ -68,6 +68,7 @@ func TestRunInitCreatesConfig(t *testing.T) {
 
 func TestRunMissingRequiredArgsReturnsExit2(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	tests := []struct {
 		name string
@@ -75,14 +76,20 @@ func TestRunMissingRequiredArgsReturnsExit2(t *testing.T) {
 	}{
 		{name: "missing account", args: []string{"--user", "Alice"}},
 		{name: "missing user and user-id", args: []string{"--account", "alice@example.com"}},
+		{name: "invalid format rejected before polling", args: []string{"--account", "alice@example.com", "--user", "Alice", "--format", "xml"}},
+		{name: "non-positive timeout rejected", args: []string{"--account", "alice@example.com", "--user", "Alice", "--timeout", "0s"}},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(tc.args, &stdout, &stderr, &fakeExecutor{})
+			exec := &fakeExecutor{}
+			code := run(tc.args, &stdout, &stderr, exec)
 			if code != 2 {
 				t.Fatalf("exit code = %d, want 2 (stderr: %s)", code, stderr.String())
+			}
+			if len(exec.sendCalls) != 0 {
+				t.Fatalf("expected no notify calls on invalid args, got %v", exec.sendCalls)
 			}
 		})
 	}
@@ -90,6 +97,7 @@ func TestRunMissingRequiredArgsReturnsExit2(t *testing.T) {
 
 func TestRunHappyPathOutputsStateAndNotify(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	outPath := filepath.Join(t.TempDir(), "state", "latest.json")
 
 	execWithMention := &fakeExecutor{
@@ -157,7 +165,7 @@ func TestRunHappyPathOutputsStateAndNotify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("compact exit code = %d, want 0 (stderr: %s)", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Google Chat: 1 unread mentions across 1 spaces") {
+	if !strings.Contains(stdout.String(), "Google Chat: 1 unread mention across 1 space") {
 		t.Fatalf("unexpected compact output:\n%s", stdout.String())
 	}
 	if len(execNoNotify.sendCalls) != 0 {

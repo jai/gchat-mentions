@@ -13,17 +13,13 @@ func FormatNotification(report *Report) []string {
 
 	const maxChunk = 4000
 
-	noun := "mentions"
-	if report.TotalMentions == 1 {
-		noun = "mention"
-	}
-
 	var allLines []string
-	allLines = append(allLines, fmt.Sprintf("📬 *Unread %s* — %d across %d spaces\n\n",
-		noun, report.TotalMentions, len(report.Spaces)))
+	allLines = append(allLines, fmt.Sprintf("📬 *Unread %s* — %d across %d %s\n\n",
+		plural(report.TotalMentions, "mention", "mentions"),
+		report.TotalMentions,
+		len(report.Spaces),
+		plural(len(report.Spaces), "space", "spaces")))
 
-	var immediateLines []string
-	var announcementLines []string
 	for _, sm := range report.Spaces {
 		for _, m := range sm.Mentions {
 			text := truncate(strings.ReplaceAll(m.Text, "\n", " "), 100)
@@ -39,24 +35,9 @@ func FormatNotification(report *Report) []string {
 					line = fmt.Sprintf("%s    %s\n", line, link)
 				}
 			}
-			if m.Category == CategoryAnnouncement {
-				announcementLines = append(announcementLines, line)
-				continue
-			}
-			immediateLines = append(immediateLines, line)
+			allLines = append(allLines, line)
 		}
 	}
-
-	appendBucket := func(title string, lines []string) {
-		if len(lines) == 0 {
-			return
-		}
-		allLines = append(allLines, fmt.Sprintf("*%s* (%d)\n", title, len(lines)))
-		allLines = append(allLines, lines...)
-		allLines = append(allLines, "\n")
-	}
-	appendBucket("Needs immediate response", immediateLines)
-	appendBucket("Announcements", announcementLines)
 
 	var chunks []string
 	var current strings.Builder
@@ -80,8 +61,11 @@ func FormatCompact(report *Report) string {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Google Chat: %d unread mentions across %d spaces\n\n",
-		report.TotalMentions, len(report.Spaces))
+	fmt.Fprintf(&sb, "Google Chat: %d unread %s across %d %s\n\n",
+		report.TotalMentions,
+		plural(report.TotalMentions, "mention", "mentions"),
+		len(report.Spaces),
+		plural(len(report.Spaces), "space", "spaces"))
 	for _, sm := range report.Spaces {
 		for _, m := range sm.Mentions {
 			text := truncate(strings.ReplaceAll(m.Text, "\n", " "), 70)
@@ -105,7 +89,11 @@ func FormatText(report *Report) string {
 		return "No unread mentions.\n"
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Unread mentions: %d across %d spaces\n", report.TotalMentions, len(report.Spaces))
+	fmt.Fprintf(&sb, "Unread %s: %d across %d %s\n",
+		plural(report.TotalMentions, "mention", "mentions"),
+		report.TotalMentions,
+		len(report.Spaces),
+		plural(len(report.Spaces), "space", "spaces"))
 	for _, sm := range report.Spaces {
 		fmt.Fprintf(&sb, "\n%s (%d)\n", sm.SpaceName, len(sm.Mentions))
 		for _, m := range sm.Mentions {
@@ -125,6 +113,13 @@ func FormatText(report *Report) string {
 		}
 	}
 	return sb.String()
+}
+
+func plural(n int, singular, many string) string {
+	if n == 1 {
+		return singular
+	}
+	return many
 }
 
 func truncate(s string, maxLen int) string {

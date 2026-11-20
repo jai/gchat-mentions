@@ -1,0 +1,17 @@
+name: lint-workflows
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+
+jobs:
+  lint-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run actionlint
+        uses: raven-actions/actionlint@v2

@@ -60,6 +60,13 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
 				return 1
 			}
+		} else {
+			var err error
+			target, err = config.ExpandHome(target)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+				return 1
+			}
 		}
 		created, err := config.WriteStarter(target)
 		if err != nil {
@@ -72,6 +79,17 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 			_, _ = fmt.Fprintf(stdout, "Config already exists at %s\n", target)
 		}
 		return 0
+	}
+
+	switch *format {
+	case "json", "compact", "text":
+	default:
+		_, _ = fmt.Fprintf(stderr, "Error: unknown format %q (expected json, compact, or text)\n", *format)
+		return 2
+	}
+	if *timeout <= 0 {
+		_, _ = fmt.Fprintln(stderr, "Error: timeout must be positive")
+		return 2
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -109,6 +127,13 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 			return 1
 		}
 		resolvedOut = defaultOut
+	} else if !strings.EqualFold(resolvedOut, "none") {
+		expanded, err := config.ExpandHome(resolvedOut)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		resolvedOut = expanded
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -145,9 +170,6 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 		_, _ = fmt.Fprint(stdout, gchat.FormatCompact(report))
 	case "text":
 		_, _ = fmt.Fprint(stdout, gchat.FormatText(report))
-	default:
-		_, _ = fmt.Fprintf(stderr, "Error: unknown format %q (expected json, compact, or text)\n", *format)
-		return 2
 	}
 
 	return 0

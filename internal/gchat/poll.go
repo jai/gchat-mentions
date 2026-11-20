@@ -68,8 +68,15 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 		wg.Add(1)
 		go func(s Space) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				mu.Lock()
+				fetchErrors = append(fetchErrors, fmt.Sprintf("%s (%s): %v", s.Name, s.ID, ctx.Err()))
+				mu.Unlock()
+				return
+			}
 
 			unread, err := fetcher.FetchMessages(ctx, s.ID, FetchOptions{UnreadOnly: true, All: true})
 			if err != nil {
@@ -105,8 +112,19 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 	}
 	wg.Wait()
 
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("poll cancelled: %w", err)
+	}
+	if len(spaces) > 0 && len(fetchErrors) == len(spaces) {
+		sort.Strings(fetchErrors)
+		return nil, fmt.Errorf("all %d spaces failed to fetch (first: %s)", len(spaces), fetchErrors[0])
+	}
+
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].SpaceName < results[j].SpaceName
+		if results[i].SpaceName != results[j].SpaceName {
+			return results[i].SpaceName < results[j].SpaceName
+		}
+		return results[i].SpaceID < results[j].SpaceID
 	})
 	sort.Strings(fetchErrors)
 

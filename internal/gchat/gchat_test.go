@@ -246,6 +246,11 @@ func TestMentionRule(t *testing.T) {
 			msg:  Message{Sender: " alice ", Text: "Reminder for @all"},
 			want: false,
 		},
+		{
+			name: "multibyte UTF-8 punctuation adjacent to display name matches",
+			msg:  Message{Sender: "Bob", Text: "“Alice”—please review"},
+			want: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -308,14 +313,12 @@ func TestFormatNotification(t *testing.T) {
 				SpaceID:   "spaces/AAA",
 				Mentions: []Message{
 					{
-						Text:     "Clean label message",
-						Link:     "https://chat.google.com/room/AAA/t1/m1?cls=10",
-						Category: CategoryImmediateResponse,
+						Text: "Clean label message",
+						Link: "https://chat.google.com/room/AAA/t1/m1?cls=10",
 					},
 					{
-						Text:     "Check <users/1001> | urgent",
-						Link:     "https://chat.google.com/room/AAA/t2/m2?cls=10",
-						Category: CategoryAnnouncement,
+						Text: "Check <users/1001> | urgent",
+						Link: "https://chat.google.com/room/AAA/t2/m2?cls=10",
 					},
 				},
 			},
@@ -327,14 +330,14 @@ func TestFormatNotification(t *testing.T) {
 		t.Fatalf("len(chunks) = %d, want 1", len(chunks))
 	}
 	body := chunks[0]
+	if !strings.Contains(body, "📬 *Unread mentions* — 2 across 1 space") {
+		t.Fatalf("unexpected notification header:\n%s", body)
+	}
 	if !strings.Contains(body, "<https://chat.google.com/room/AAA/t1/m1?cls=10|Clean label message>") {
 		t.Fatalf("expected inline chat link for safe label, got:\n%s", body)
 	}
 	if !strings.Contains(body, "Check <users/1001> | urgent\n    https://chat.google.com/room/AAA/t2/m2?cls=10") {
 		t.Fatalf("expected fallback link on next line for label with <>|, got:\n%s", body)
-	}
-	if !strings.Contains(body, "*Needs immediate response* (1)") || !strings.Contains(body, "*Announcements* (1)") {
-		t.Fatalf("expected both buckets in notification, got:\n%s", body)
 	}
 
 	// Chunking when total output exceeds 4000 characters.
@@ -390,7 +393,7 @@ func TestFormatCompactAndText(t *testing.T) {
 	}
 
 	compact := FormatCompact(report)
-	if !strings.Contains(compact, "Google Chat: 2 unread mentions across 1 spaces") {
+	if !strings.Contains(compact, "Google Chat: 2 unread mentions across 1 space\n") {
 		t.Fatalf("unexpected compact header:\n%s", compact)
 	}
 	if !strings.Contains(compact, `- [Review \[PR #42\]](https://chat.google.com/room/AAA/t1/m1?cls=10) — Engineering`) {
@@ -401,7 +404,7 @@ func TestFormatCompactAndText(t *testing.T) {
 	}
 
 	text := FormatText(report)
-	if !strings.Contains(text, "Unread mentions: 2 across 1 spaces") {
+	if !strings.Contains(text, "Unread mentions: 2 across 1 space\n") {
 		t.Fatalf("unexpected text header:\n%s", text)
 	}
 	if !strings.Contains(text, "  - Bob: Review [PR #42]\n    https://chat.google.com/room/AAA/t1/m1?cls=10\n") {
@@ -488,5 +491,21 @@ func TestPollEndToEnd(t *testing.T) {
 	}
 	if len(report.Errors) != 1 || !strings.Contains(report.Errors[0], "Broken (spaces/ERR)") {
 		t.Fatalf("Errors = %v, want single error for Broken (spaces/ERR)", report.Errors)
+	}
+}
+
+func TestPollAllSpacesFailedReturnsError(t *testing.T) {
+	exec := &mockExecutor{
+		handler: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 3 && args[0] == "chat" && args[1] == "spaces" && args[2] == "list" {
+				return []byte("RESOURCE\tDISPLAY_NAME\tTYPE\nspaces/A\tAlpha\tSPACE\n"), nil
+			}
+			return nil, errors.New("auth expired")
+		},
+	}
+
+	fetcher := NewFetcher(exec, "alice@example.com")
+	if _, err := Poll(context.Background(), fetcher, PollOptions{Account: "alice@example.com", UserName: "Alice"}); err == nil {
+		t.Fatal("expected error when every space fetch fails, got nil")
 	}
 }
