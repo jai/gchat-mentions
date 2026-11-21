@@ -28,7 +28,8 @@ Run `gog auth list`. If the user's work Google account is not signed in with `ch
 2. Ask the user for:
    - Their work Google email address.
    - Their Google Chat display name (what teammates type after `@`).
-   - Optional: any announcement spaces where `@all` should be muted, and whether they want digests posted to a personal Google Chat space (if so, help find its space ID via `gog chat spaces list --account <email> --plain`).
+   - Optional: any announcement spaces where `@all` should be muted.
+   - Optional: whether they want digests posted to a personal Google Chat space. If yes, check if they already have one (`gog chat spaces list --account <email> --plain`) or offer to create a new private space for them (for example, `gog chat spaces create "<FirstName>'s Personal Space" --account <email> --json --no-input`) and save its `spaces/...` ID as `notify_space`.
 3. Save those values to `~/.config/gchat-mentions/config.yaml`.
 
 ## 5. Verify and schedule
