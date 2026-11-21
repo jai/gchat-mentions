@@ -9,22 +9,13 @@
 
 ## Install with an AI agent
 
-Copy and paste this prompt into Claude Code, Codex, Antigravity, or another coding agent on your computer:
+Copy and paste this one-liner into Claude Code, Codex, Antigravity, or another coding agent on your computer:
 
 ```text
-Set up https://github.com/jai/gchat-mentions on this computer so you can check my unread Google Chat mentions on demand.
-
-1. Check if Go (1.25+) and gog (https://github.com/steipete/gogcli) are installed. Install any missing prerequisite (on macOS: brew install go gogcli).
-2. Clone https://github.com/jai/gchat-mentions (or install with `go install github.com/jai/gchat-mentions/cmd/gchat-mentions@latest` and ensure `$(go env GOPATH)/bin` is on PATH).
-3. Check `gog auth list`. If my work Google account is not signed in with `chat`, follow `docs/gog-setup.md`:
-   - Never ask me to paste an OAuth client secret into chat, and do not access my password manager.
-   - Ask me in plain language what I want to connect (just Google Chat, or Chat and Calendar) and remind me I can add or remove permissions anytime later.
-   - Open a separate macOS Terminal window running `./scripts/setup-gog-auth.sh` (with `open -a Terminal`) so I can paste the OAuth Client ID and Secret directly from my password manager and complete Google Sign-In privately. Wait for me to say I am done, then verify with `gog auth list`.
-4. Run `gchat-mentions --init`, ask for my work email and Google Chat display name, and save them in `~/.config/gchat-mentions/config.yaml`. Ask if I want to mute `@all` in any announcement spaces or post digests to a personal space.
-5. Run `gchat-mentions --format compact` once to verify it works and confirm `~/.local/state/gchat-mentions/latest.json` was written.
-6. Set up a recurring schedule (every 2 hours during my work hours via cron or launchd) so `~/.local/state/gchat-mentions/latest.json` stays fresh.
-7. Whenever I ask for my Google Chat status or unread mentions, read `~/.local/state/gchat-mentions/latest.json` (or run `gchat-mentions --format json`) and summarize what needs my attention with links.
+Follow https://github.com/jai/gchat-mentions/blob/main/docs/agent-setup.md to set up Google Chat mention tracking on this computer.
 ```
+
+See [docs/agent-setup.md](docs/agent-setup.md) for the full steps the agent follows.
 
 ## Install manually
 
