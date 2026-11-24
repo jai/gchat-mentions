@@ -108,11 +108,21 @@ Settings live in `~/.config/gchat-mentions/config.yaml`. Command-line flags over
 | `account` | `--account` | Google Workspace email authorized in `gog` |
 | `user_name` | `--user` | Display name for mention matching |
 | `user_id` | `--user-id` | Optional Google Chat user ID (`users/123`) |
-| `notify_space` | `--notify-space` | Optional space ID to post unread digests to |
+| `gog_env_file` | — | Optional `KEY=VALUE` env file loaded for headless `gog` runs |
+| `notify_space` | `--notify-space` | Optional space ID to post unread digests to (pass `none` to suppress) |
 | `output_path` | `--out` | JSON status file path (default `~/.local/state/gchat-mentions/latest.json`) |
+| `active_within` | `--active-within` | Only scan spaces active within this Go duration (for example `6h`, `168h`) |
+| `include_dms` | `--include-dms` | Include unread direct messages |
 | `exclude_spaces` | `--exclude` | Space name patterns to skip |
-| `announcement_spaces` | `--atall-mute` | Spaces where `@all`-only messages are muted |
+| `announcement_spaces` | `--atall-mute` | Spaces where `@all`/`@here`-only messages are muted |
 | `ignore_prefixes` | `--ignore-prefix` | Automated message prefixes to skip |
+| `urgent` | `--urgent`, `--no-urgent`, `--urgent-init`, `--urgent-test` | Optional LLM urgency classification and dry-run/live escalation |
+
+## Urgent mentions
+
+`gchat-mentions` includes optional urgency classification for mentions and direct messages, supporting TypeSafe, Cloudflare Workers AI, and OpenAI-compatible models in single or shadow (multi-provider) mode with rate-limited webhook or fallback command escalation. It runs in `dry-run` mode by default.
+
+See [docs/urgent-mentions.md](docs/urgent-mentions.md) for setup, provider configuration, and safe rollout steps.
 
 Exit codes: `0` on success, `1` on runtime or poll errors, and `2` on invalid flags or missing required settings.
 

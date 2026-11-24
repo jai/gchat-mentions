@@ -11,7 +11,39 @@ import (
 type SpaceMentions struct {
 	SpaceName string    `json:"space_name"`
 	SpaceID   string    `json:"space_id"`
+	SpaceType string    `json:"space_type,omitempty"`
 	Mentions  []Message `json:"mentions"`
+}
+
+// UrgentSummary captures optional urgency classification results attached to a Report.
+type UrgentSummary struct {
+	Mode           string       `json:"mode"`
+	Candidates     int          `json:"candidates"`
+	New            int          `json:"new"`
+	Stale          int          `json:"stale"`
+	Classified     int          `json:"classified"`
+	Overflow       int          `json:"overflow"`
+	UrgentCount    int          `json:"urgent_count"`
+	Escalations    int          `json:"escalations"`
+	ProviderErrors int          `json:"provider_errors"`
+	CostUSD        float64      `json:"cost_usd"`
+	Skipped        bool         `json:"skipped,omitempty"`
+	SkipReason     string       `json:"skip_reason,omitempty"`
+	UrgentItems    []UrgentItem `json:"urgent_items,omitempty"`
+}
+
+// UrgentItem is a concise summary of a mention flagged as urgent.
+type UrgentItem struct {
+	MessageID   string `json:"message_id"`
+	SpaceName   string `json:"space_name"`
+	SpaceType   string `json:"space_type,omitempty"`
+	Sender      string `json:"sender"`
+	TextExcerpt string `json:"text_excerpt"`
+	Link        string `json:"link,omitempty"`
+	Time        string `json:"time"`
+	Broadcast   bool   `json:"broadcast"`
+	Escalation  string `json:"escalation"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // Report is the normalized unread-mentions result written to state and stdout.
@@ -22,6 +54,7 @@ type Report struct {
 	TotalMentions int             `json:"total_mentions"`
 	Spaces        []SpaceMentions `json:"spaces,omitempty"`
 	Errors        []string        `json:"errors,omitempty"`
+	Urgent        *UrgentSummary  `json:"urgent,omitempty"`
 }
 
 // Rule matches messages of interest.
@@ -29,10 +62,17 @@ type Rule interface {
 	Match(msg Message) bool
 }
 
-// MentionRule matches messages that mention a user by ID token, display name, or @all.
+// MentionRule matches messages that mention a user by ID token, display name,
+// broadcast (@all/@here), or direct message (when IncludeDMs is true).
 type MentionRule struct {
 	UserID      string
 	DisplayName string
+	IncludeDMs  bool
+}
+
+// IsBroadcast reports whether text contains a word-bounded @all or @here mention.
+func IsBroadcast(text string) bool {
+	return containsWord(text, "@all") || containsWord(text, "@here")
 }
 
 // Match returns true when msg mentions the user (excluding self-sent messages).
@@ -43,8 +83,11 @@ func (r *MentionRule) Match(msg Message) bool {
 	if r.DisplayName != "" && strings.EqualFold(strings.TrimSpace(msg.Sender), strings.TrimSpace(r.DisplayName)) {
 		return false
 	}
+	if r.IncludeDMs && msg.SpaceType == "DIRECT_MESSAGE" {
+		return true
+	}
 	text := msg.Text
-	if containsWord(text, "@all") {
+	if IsBroadcast(text) {
 		return true
 	}
 	if r.UserID != "" && strings.Contains(text, "<"+r.UserID+">") {
@@ -101,7 +144,7 @@ type Filter interface {
 	Suppress(msg Message) bool
 }
 
-// AtAllOnlyFilter suppresses @all-only matches in announcement spaces while
+// AtAllOnlyFilter suppresses @all/@here-only matches in announcement spaces while
 // keeping direct mentions by user ID or display name.
 type AtAllOnlyFilter struct {
 	SpaceNames  []string
@@ -109,7 +152,7 @@ type AtAllOnlyFilter struct {
 	UserID      string
 }
 
-// Suppress returns true if msg is in an announcement space and only matched @all.
+// Suppress returns true if msg is in an announcement space and only matched @all/@here.
 func (f *AtAllOnlyFilter) Suppress(msg Message) bool {
 	if !f.matchesSpace(msg.SpaceName) {
 		return false

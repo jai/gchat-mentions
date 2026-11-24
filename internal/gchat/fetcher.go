@@ -11,9 +11,10 @@ import (
 
 // Space represents a Google Chat space.
 type Space struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	LastActive time.Time `json:"last_active,omitempty"`
 }
 
 // Message represents a Google Chat message.
@@ -21,6 +22,7 @@ type Message struct {
 	ID        string    `json:"id"`
 	SpaceID   string    `json:"space_id"`
 	SpaceName string    `json:"space_name"`
+	SpaceType string    `json:"space_type,omitempty"`
 	Sender    string    `json:"sender"`
 	Text      string    `json:"text"`
 	Time      time.Time `json:"time"`
@@ -34,6 +36,16 @@ type FetchOptions struct {
 	Max        int
 	UnreadOnly bool
 	All        bool
+	Thread     string
+	Order      string
+}
+
+// SpaceFilterOptions controls which Google Chat spaces are polled.
+type SpaceFilterOptions struct {
+	Query             string
+	Exclude           []string
+	IncludeDMs        bool
+	IncludeGroupChats bool
 }
 
 // Fetcher retrieves and posts Google Chat messages via the gog CLI.
@@ -59,6 +71,18 @@ type gogMessage struct {
 	Thread     string `json:"thread"`
 }
 
+type apiSpacesResponse struct {
+	Spaces        []apiSpace `json:"spaces"`
+	NextPageToken string     `json:"nextPageToken"`
+}
+
+type apiSpace struct {
+	Name           string `json:"name"`
+	DisplayName    string `json:"displayName"`
+	SpaceType      string `json:"spaceType"`
+	LastActiveTime string `json:"lastActiveTime"`
+}
+
 // FetchSpaces returns all spaces the account belongs to.
 func (f *Fetcher) FetchSpaces(ctx context.Context) ([]Space, error) {
 	out, err := f.exec.Run(ctx, "gog", "chat", "spaces", "list",
@@ -67,6 +91,73 @@ func (f *Fetcher) FetchSpaces(ctx context.Context) ([]Space, error) {
 		return nil, fmt.Errorf("gchat spaces list: %w", err)
 	}
 	return parseSpacesPlain(string(out)), nil
+}
+
+// FetchActiveSpaces lists spaces via the Chat REST API (most recently active first)
+// and stops paginating once lastActiveTime is older than since. If the API call fails
+// (for example, on older gog versions), it falls back to FetchSpaces.
+func (f *Fetcher) FetchActiveSpaces(ctx context.Context, since time.Time) ([]Space, error) {
+	if since.IsZero() {
+		return f.FetchSpaces(ctx)
+	}
+
+	const pageSize = 200
+	var out []Space
+	pageToken := ""
+	for {
+		params := map[string]any{"pageSize": pageSize}
+		if pageToken != "" {
+			params["pageToken"] = pageToken
+		}
+		rawParams, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("marshal spaces.list params: %w", err)
+		}
+		raw, err := f.exec.Run(ctx, "gog", "api", "call", "chat", "v1", "spaces.list",
+			"--params", string(rawParams),
+			"--account", f.account,
+			"--json", "--no-input")
+		if err != nil {
+			if len(out) == 0 {
+				return f.FetchSpaces(ctx)
+			}
+			return out, nil
+		}
+
+		var resp apiSpacesResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			if len(out) == 0 {
+				return f.FetchSpaces(ctx)
+			}
+			return out, nil
+		}
+
+		stop := false
+		for _, sp := range resp.Spaces {
+			var lastActive time.Time
+			if sp.LastActiveTime != "" {
+				if parsed, err := time.Parse(time.RFC3339Nano, sp.LastActiveTime); err == nil {
+					lastActive = parsed.UTC()
+					if lastActive.Before(since) {
+						stop = true
+						continue
+					}
+				}
+			}
+			out = append(out, Space{
+				ID:         sp.Name,
+				Name:       sp.DisplayName,
+				Type:       sp.SpaceType,
+				LastActive: lastActive,
+			})
+		}
+
+		if stop || resp.NextPageToken == "" || len(resp.Spaces) == 0 {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return out, nil
 }
 
 // FetchMessages returns messages from a space.
@@ -82,6 +173,12 @@ func (f *Fetcher) FetchMessages(ctx context.Context, spaceID string, opts FetchO
 	}
 	if opts.UnreadOnly {
 		args = append(args, "--unread")
+	}
+	if opts.Thread != "" {
+		args = append(args, "--thread", opts.Thread)
+	}
+	if opts.Order != "" {
+		args = append(args, "--order", opts.Order)
 	}
 
 	out, err := f.exec.Run(ctx, "gog", args...)
@@ -124,6 +221,31 @@ func (f *Fetcher) FetchMessages(ctx context.Context, spaceID string, opts FetchO
 	return msgs, nil
 }
 
+// FetchThreadContext returns up to maxMsgs recent messages from msg's thread
+// for urgency classification context.
+func (f *Fetcher) FetchThreadContext(ctx context.Context, msg Message, maxMsgs int) ([]Message, error) {
+	if msg.SpaceID == "" || msg.Thread == "" {
+		return nil, nil
+	}
+	if maxMsgs <= 0 {
+		maxMsgs = 6
+	}
+	msgs, err := f.FetchMessages(ctx, msg.SpaceID, FetchOptions{
+		Thread: msg.Thread,
+		Max:    maxMsgs,
+		Order:  "createTime desc",
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range msgs {
+		msgs[i].SpaceName = msg.SpaceName
+		msgs[i].SpaceType = msg.SpaceType
+		msgs[i].Link = MessageLink(msgs[i])
+	}
+	return msgs, nil
+}
+
 // Notify posts a Report to a Google Chat space, chunked to fit message limits.
 func (f *Fetcher) Notify(ctx context.Context, spaceID string, report *Report) error {
 	for _, chunk := range FormatNotification(report) {
@@ -161,17 +283,35 @@ func parseSpacesPlain(output string) []Space {
 // FilterSpacesByName returns SPACE-type spaces matching query (case-insensitive)
 // and not matching any exclude pattern.
 func FilterSpacesByName(spaces []Space, query string, exclude ...string) []Space {
-	q := strings.ToLower(query)
+	return FilterSpaces(spaces, SpaceFilterOptions{
+		Query:   query,
+		Exclude: exclude,
+	})
+}
+
+// FilterSpaces returns spaces matching type, query, and exclude criteria.
+func FilterSpaces(spaces []Space, opts SpaceFilterOptions) []Space {
+	q := strings.ToLower(opts.Query)
 	var filtered []Space
 	for _, s := range spaces {
-		if s.Type != "SPACE" {
+		switch s.Type {
+		case "SPACE":
+		case "DIRECT_MESSAGE":
+			if !opts.IncludeDMs {
+				continue
+			}
+		case "GROUP_CHAT":
+			if !opts.IncludeGroupChats {
+				continue
+			}
+		default:
 			continue
 		}
 		if q != "" && !strings.Contains(strings.ToLower(s.Name), q) {
 			continue
 		}
 		excluded := false
-		for _, ex := range exclude {
+		for _, ex := range opts.Exclude {
 			if ex != "" && strings.Contains(strings.ToLower(s.Name), strings.ToLower(ex)) {
 				excluded = true
 				break
@@ -195,6 +335,9 @@ func MessageLink(msg Message) string {
 	}
 	spaceID := parts[1]
 	threadID := parts[3]
+	if msg.SpaceType == "DIRECT_MESSAGE" {
+		return fmt.Sprintf("https://chat.google.com/dm/%s/%s", spaceID, threadID)
+	}
 	messageID := messageIDFromResource(msg.ID)
 	if messageID == "" {
 		return fmt.Sprintf("https://chat.google.com/room/%s/%s", spaceID, threadID)

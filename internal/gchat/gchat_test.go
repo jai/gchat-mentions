@@ -509,3 +509,53 @@ func TestPollAllSpacesFailedReturnsError(t *testing.T) {
 		t.Fatal("expected error when every space fetch fails, got nil")
 	}
 }
+
+func TestFetchActiveSpacesStopsAtCutoffAndIncludesDMs(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	exec := &mockExecutor{
+		handler: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 5 && args[0] == "api" && args[1] == "call" && args[4] == "spaces.list" {
+				return []byte(`{
+					"spaces": [
+						{"name":"spaces/NEW","displayName":"Active Room","spaceType":"SPACE","lastActiveTime":"2026-06-01T11:30:00Z"},
+						{"name":"spaces/DM1","displayName":"","spaceType":"DIRECT_MESSAGE","lastActiveTime":"2026-06-01T11:00:00Z"},
+						{"name":"spaces/OLD","displayName":"Old Room","spaceType":"SPACE","lastActiveTime":"2026-05-01T00:00:00Z"}
+					],
+					"nextPageToken": "page2-should-not-be-fetched"
+				}`), nil
+			}
+			if len(args) >= 4 && args[0] == "chat" && args[1] == "messages" && args[2] == "list" {
+				if args[3] == "spaces/DM1" {
+					return []byte(`[{"resource":"spaces/DM1/messages/t1.m1","sender":"Bob","text":"Are you free?","createTime":"2026-06-01T11:00:00Z","thread":"spaces/DM1/threads/t1"}]`), nil
+				}
+				return []byte(`[]`), nil
+			}
+			return nil, fmt.Errorf("unexpected args: %v", args)
+		},
+	}
+
+	fetcher := NewFetcher(exec, "alice@example.com")
+	report, err := Poll(context.Background(), fetcher, PollOptions{
+		Account:      "alice@example.com",
+		UserName:     "Alice",
+		IncludeDMs:   true,
+		ActiveWithin: 6 * time.Hour,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("Poll() error: %v", err)
+	}
+	if report.TotalMentions != 1 || len(report.Spaces) != 1 {
+		t.Fatalf("expected 1 DM mention, got %+v", report)
+	}
+	m := report.Spaces[0].Mentions[0]
+	if m.SpaceType != "DIRECT_MESSAGE" || m.Link != "https://chat.google.com/dm/DM1/t1" {
+		t.Fatalf("unexpected DM message/link: %+v", m)
+	}
+	// Ensure spaces/OLD was never polled.
+	for _, c := range exec.calls {
+		if len(c.args) >= 4 && c.args[3] == "spaces/OLD" {
+			t.Fatal("expected spaces/OLD to be pruned by active_within")
+		}
+	}
+}

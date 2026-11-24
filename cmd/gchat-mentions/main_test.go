@@ -195,3 +195,39 @@ func TestRunHappyPathOutputsStateAndNotify(t *testing.T) {
 		t.Fatalf("expected no notify calls when mentions == 0, got %v", execZeroMentions.sendCalls)
 	}
 }
+
+func TestRunUrgentTestOfflineAndNotifyNone(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--urgent-test", "--urgent-offline", "--user", "Alice"}, &stdout, &stderr, &fakeExecutor{})
+	if code != 0 {
+		t.Fatalf("--urgent-test exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"test": true`) || !strings.Contains(stdout.String(), `"mode": "dry-run"`) {
+		t.Fatalf("unexpected --urgent-test output:\n%s", stdout.String())
+	}
+
+	// Verify --notify-space none overrides config notify_space.
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfgYAML := "account: alice@example.com\nuser_name: Alice\nnotify_space: spaces/SHOULD_NOT_SEND\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	exec := &fakeExecutor{
+		spacesTSV: "RESOURCE\tDISPLAY_NAME\tTYPE\nspaces/AAA\tEngineering\tSPACE\n",
+		messagesMap: map[string]string{
+			"spaces/AAA": `[{"resource":"spaces/AAA/messages/t1.m1","sender":"Bob","text":"Hey Alice","createTime":"2026-05-10T12:00:00Z","thread":"spaces/AAA/threads/t1"}]`,
+		},
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"--config", cfgPath, "--notify-space", "none", "--out", "none", "--format", "compact"}, &stdout, &stderr, exec)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	if len(exec.sendCalls) != 0 {
+		t.Fatalf("expected --notify-space none to suppress notification, got %v", exec.sendCalls)
+	}
+}

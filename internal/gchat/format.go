@@ -5,6 +5,19 @@ import (
 	"strings"
 )
 
+func displaySpaceName(sm SpaceMentions) string {
+	if strings.TrimSpace(sm.SpaceName) != "" {
+		return sm.SpaceName
+	}
+	if sm.SpaceType == "DIRECT_MESSAGE" {
+		return "Direct message"
+	}
+	if sm.SpaceType == "GROUP_CHAT" {
+		return "Group chat"
+	}
+	return sm.SpaceID
+}
+
 // FormatNotification formats a Report into Google Chat message chunks (<= 4000 chars each).
 func FormatNotification(report *Report) []string {
 	if report == nil || report.TotalMentions == 0 {
@@ -21,16 +34,17 @@ func FormatNotification(report *Report) []string {
 		plural(len(report.Spaces), "space", "spaces")))
 
 	for _, sm := range report.Spaces {
+		label := displaySpaceName(sm)
 		for _, m := range sm.Mentions {
 			text := truncate(strings.ReplaceAll(m.Text, "\n", " "), 100)
-			line := fmt.Sprintf("  → *%s:* %s\n", sm.SpaceName, text)
+			line := fmt.Sprintf("  → *%s:* %s\n", label, text)
 			link := m.Link
 			if link == "" {
 				link = MessageLink(m)
 			}
 			if link != "" {
 				if canUseChatLinkLabel(text) {
-					line = fmt.Sprintf("  → *%s:* <%s|%s>\n", sm.SpaceName, link, text)
+					line = fmt.Sprintf("  → *%s:* <%s|%s>\n", label, link, text)
 				} else {
 					line = fmt.Sprintf("%s    %s\n", line, link)
 				}
@@ -67,6 +81,7 @@ func FormatCompact(report *Report) string {
 		len(report.Spaces),
 		plural(len(report.Spaces), "space", "spaces"))
 	for _, sm := range report.Spaces {
+		label := displaySpaceName(sm)
 		for _, m := range sm.Mentions {
 			text := truncate(strings.ReplaceAll(m.Text, "\n", " "), 70)
 			link := m.Link
@@ -74,9 +89,23 @@ func FormatCompact(report *Report) string {
 				link = MessageLink(m)
 			}
 			if link != "" {
-				fmt.Fprintf(&sb, "- [%s](%s) — %s\n", escapeMarkdownLinkLabel(text), link, sm.SpaceName)
+				fmt.Fprintf(&sb, "- [%s](%s) — %s\n", escapeMarkdownLinkLabel(text), link, label)
 			} else {
-				fmt.Fprintf(&sb, "- %s — %s\n", text, sm.SpaceName)
+				fmt.Fprintf(&sb, "- %s — %s\n", text, label)
+			}
+		}
+	}
+	if report.Urgent != nil && len(report.Urgent.UrgentItems) > 0 {
+		fmt.Fprintf(&sb, "\nUrgent (%d, mode=%s):\n", len(report.Urgent.UrgentItems), report.Urgent.Mode)
+		for _, u := range report.Urgent.UrgentItems {
+			space := u.SpaceName
+			if space == "" {
+				space = "Direct message"
+			}
+			if u.Link != "" {
+				fmt.Fprintf(&sb, "- [%s](%s) — %s (%s)\n", escapeMarkdownLinkLabel(truncate(u.TextExcerpt, 70)), u.Link, space, u.Escalation)
+			} else {
+				fmt.Fprintf(&sb, "- %s — %s (%s)\n", truncate(u.TextExcerpt, 70), space, u.Escalation)
 			}
 		}
 	}
@@ -95,7 +124,7 @@ func FormatText(report *Report) string {
 		len(report.Spaces),
 		plural(len(report.Spaces), "space", "spaces"))
 	for _, sm := range report.Spaces {
-		fmt.Fprintf(&sb, "\n%s (%d)\n", sm.SpaceName, len(sm.Mentions))
+		fmt.Fprintf(&sb, "\n%s (%d)\n", displaySpaceName(sm), len(sm.Mentions))
 		for _, m := range sm.Mentions {
 			text := truncate(strings.ReplaceAll(m.Text, "\n", " "), 120)
 			if m.Sender != "" {
@@ -109,6 +138,19 @@ func FormatText(report *Report) string {
 			}
 			if link != "" {
 				fmt.Fprintf(&sb, "    %s\n", link)
+			}
+		}
+	}
+	if report.Urgent != nil && len(report.Urgent.UrgentItems) > 0 {
+		fmt.Fprintf(&sb, "\nUrgent (%d, mode=%s)\n", len(report.Urgent.UrgentItems), report.Urgent.Mode)
+		for _, u := range report.Urgent.UrgentItems {
+			space := u.SpaceName
+			if space == "" {
+				space = "Direct message"
+			}
+			fmt.Fprintf(&sb, "  - [%s] %s (%s): %s\n", u.Escalation, space, u.Sender, truncate(u.TextExcerpt, 120))
+			if u.Link != "" {
+				fmt.Fprintf(&sb, "    %s\n", u.Link)
 			}
 		}
 	}

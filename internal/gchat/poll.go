@@ -17,6 +17,9 @@ type PollOptions struct {
 	ExcludeSpaces      []string
 	AnnouncementSpaces []string
 	IgnorePrefixes     []string
+	IncludeDMs         bool
+	IncludeGroupChats  bool
+	ActiveWithin       time.Duration
 	Concurrency        int
 	Now                func() time.Time
 }
@@ -24,7 +27,21 @@ type PollOptions struct {
 // Poll fetches unread messages across matching spaces, filters for mentions,
 // and returns an alphabetically sorted Report.
 func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, error) {
-	spaces, err := fetcher.FetchSpaces(ctx)
+	nowFn := opts.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn().UTC()
+
+	var (
+		spaces []Space
+		err    error
+	)
+	if opts.ActiveWithin > 0 {
+		spaces, err = fetcher.FetchActiveSpaces(ctx, now.Add(-opts.ActiveWithin))
+	} else {
+		spaces, err = fetcher.FetchSpaces(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +50,12 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 		var filtered []Space
 		seen := make(map[string]bool)
 		for _, query := range opts.Spaces {
-			for _, s := range FilterSpacesByName(spaces, query, opts.ExcludeSpaces...) {
+			for _, s := range FilterSpaces(spaces, SpaceFilterOptions{
+				Query:             query,
+				Exclude:           opts.ExcludeSpaces,
+				IncludeDMs:        opts.IncludeDMs,
+				IncludeGroupChats: opts.IncludeGroupChats,
+			}) {
 				if !seen[s.ID] {
 					seen[s.ID] = true
 					filtered = append(filtered, s)
@@ -42,14 +64,19 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 		}
 		spaces = filtered
 	} else {
-		spaces = FilterSpacesByName(spaces, "", opts.ExcludeSpaces...)
+		spaces = FilterSpaces(spaces, SpaceFilterOptions{
+			Exclude:           opts.ExcludeSpaces,
+			IncludeDMs:        opts.IncludeDMs,
+			IncludeGroupChats: opts.IncludeGroupChats,
+		})
 	}
 
 	var rules []Rule
-	if opts.UserID != "" || opts.UserName != "" {
+	if opts.UserID != "" || opts.UserName != "" || opts.IncludeDMs {
 		rules = append(rules, &MentionRule{
 			UserID:      opts.UserID,
 			DisplayName: opts.UserName,
+			IncludeDMs:  opts.IncludeDMs,
 		})
 	}
 
@@ -87,6 +114,8 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 			}
 			for i := range unread {
 				unread[i].SpaceName = s.Name
+				unread[i].SpaceType = s.Type
+				unread[i].Link = MessageLink(unread[i])
 			}
 
 			var mentions []Message
@@ -104,6 +133,7 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 				results = append(results, SpaceMentions{
 					SpaceName: s.Name,
 					SpaceID:   s.ID,
+					SpaceType: s.Type,
 					Mentions:  mentions,
 				})
 				mu.Unlock()
@@ -133,13 +163,8 @@ func Poll(ctx context.Context, fetcher *Fetcher, opts PollOptions) (*Report, err
 		total += len(sm.Mentions)
 	}
 
-	nowFn := opts.Now
-	if nowFn == nil {
-		nowFn = time.Now
-	}
-
 	report := &Report{
-		CheckedAt:     nowFn().UTC(),
+		CheckedAt:     now,
 		Account:       opts.Account,
 		UserName:      opts.UserName,
 		TotalMentions: total,

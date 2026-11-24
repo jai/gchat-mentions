@@ -13,12 +13,13 @@ import (
 	"github.com/jai/gchat-mentions/internal/config"
 	"github.com/jai/gchat-mentions/internal/gchat"
 	"github.com/jai/gchat-mentions/internal/state"
+	"github.com/jai/gchat-mentions/internal/urgent"
 )
 
 var version = "dev"
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, gchat.NewCLIExecutor()))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, nil))
 }
 
 func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
@@ -26,20 +27,31 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 	fs.SetOutput(stderr)
 
 	var (
-		configPath   = fs.String("config", "", "Path to YAML config file (default: ~/.config/gchat-mentions/config.yaml)")
-		initConfig   = fs.Bool("init", false, "Create a starter config file if absent and exit")
-		account      = fs.String("account", "", "Google Workspace email authorized in gog (overrides config)")
-		userName     = fs.String("user", "", "Display name for mention matching (overrides config)")
-		userID       = fs.String("user-id", "", "Google Chat user ID, e.g. users/123 (overrides config)")
-		spaces       = fs.String("spaces", "", "Comma-separated space name filters (overrides config)")
-		exclude      = fs.String("exclude", "", "Comma-separated space name patterns to skip (overrides config)")
-		atAllMute    = fs.String("atall-mute", "", "Comma-separated announcement spaces where @all is muted (overrides config)")
-		ignorePrefix = fs.String("ignore-prefix", "", "Comma-separated message prefixes to ignore (overrides config)")
-		notifySpace  = fs.String("notify-space", "", "Post unread mention digest to this space ID (overrides config)")
-		outputPath   = fs.String("out", "", "Path to write latest JSON report (default: ~/.local/state/gchat-mentions/latest.json; pass 'none' to disable)")
-		format       = fs.String("format", "json", "Stdout format: json, compact, or text")
-		timeout      = fs.Duration("timeout", 5*time.Minute, "Maximum runtime for the poll")
-		showVersion  = fs.Bool("version", false, "Print version and exit")
+		configPath        = fs.String("config", "", "Path to YAML config file (default: ~/.config/gchat-mentions/config.yaml)")
+		initConfig        = fs.Bool("init", false, "Create a starter config file if absent and exit")
+		account           = fs.String("account", "", "Google Workspace email authorized in gog (overrides config)")
+		userName          = fs.String("user", "", "Display name for mention matching (overrides config)")
+		userID            = fs.String("user-id", "", "Google Chat user ID, e.g. users/123 (overrides config)")
+		spaces            = fs.String("spaces", "", "Comma-separated space name filters (overrides config)")
+		exclude           = fs.String("exclude", "", "Comma-separated space name patterns to skip (overrides config)")
+		atAllMute         = fs.String("atall-mute", "", "Comma-separated announcement spaces where @all/@here is muted (overrides config)")
+		ignorePrefix      = fs.String("ignore-prefix", "", "Comma-separated message prefixes to ignore (overrides config)")
+		includeDMs        = fs.Bool("include-dms", false, "Include direct messages when polling")
+		includeGroupChats = fs.Bool("include-group-chats", false, "Include group chats when polling")
+		activeWithin      = fs.String("active-within", "", "Only scan spaces active within this Go duration (e.g. 6h, 168h)")
+		notifySpace       = fs.String("notify-space", "", "Post unread mention digest to this space ID (overrides config; pass 'none' to disable)")
+		outputPath        = fs.String("out", "", "Path to write latest JSON report (default: ~/.local/state/gchat-mentions/latest.json; pass 'none' to disable)")
+		format            = fs.String("format", "json", "Stdout format: json, compact, or text")
+		timeout           = fs.Duration("timeout", 5*time.Minute, "Maximum runtime for the poll")
+		showVersion       = fs.Bool("version", false, "Print version and exit")
+
+		urgentEnable  = fs.Bool("urgent", false, "Enable urgency classification for this run")
+		urgentDisable = fs.Bool("no-urgent", false, "Disable urgency classification for this run")
+		urgentInit    = fs.Bool("urgent-init", false, "Mark currently visible mentions as seen without classifying")
+		urgentMode    = fs.String("urgent-mode", "", "Urgent escalation mode override: auto, dry-run, or live")
+		urgentMax     = fs.Int("urgent-max", 0, "Override max new mentions classified in this run")
+		urgentTest    = fs.Bool("urgent-test", false, "Dry-run urgency classification and escalation on a synthetic urgent message")
+		urgentOffline = fs.Bool("urgent-offline", false, "With --urgent-test: skip live provider HTTP calls and use canned verdicts")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -91,6 +103,18 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 		_, _ = fmt.Fprintln(stderr, "Error: timeout must be positive")
 		return 2
 	}
+	if *urgentEnable && *urgentDisable {
+		_, _ = fmt.Fprintln(stderr, "Error: cannot set both --urgent and --no-urgent")
+		return 2
+	}
+	if *urgentMode != "" {
+		switch strings.ToLower(strings.TrimSpace(*urgentMode)) {
+		case "auto", "dry-run", "live":
+		default:
+			_, _ = fmt.Fprintf(stderr, "Error: unknown urgent mode %q (expected auto, dry-run, or live)\n", *urgentMode)
+			return 2
+		}
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -98,14 +122,71 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 		return 1
 	}
 
+	resolvedUserName := firstNonEmpty(*userName, cfg.UserName)
+
+	// Synthetic urgent escalation dry-run does not require polling Google Chat.
+	if *urgentTest {
+		settings, err := urgent.ResolveSettings(cfg.Urgent, resolvedUserName)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 2
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		rec, err := urgent.RunTest(ctx, settings, *urgentOffline, urgent.RunOptions{})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error running urgent test: %v\n", err)
+			return 1
+		}
+		encoded, err := json.MarshalIndent(rec, "", "  ")
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error formatting JSON: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintln(stdout, string(encoded))
+		return 0
+	}
+
+	runUrgent := (cfg.Urgent.Enabled || *urgentEnable || *urgentInit) && !*urgentDisable
+	var urgentSettings *urgent.Settings
+	if runUrgent {
+		urgentSettings, err = urgent.ResolveSettings(cfg.Urgent, resolvedUserName)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 2
+		}
+	}
+
+	// Determine active_within duration (explicit flag > config > urgent max_age default when urgent runs).
+	var resolvedActiveWithin time.Duration
+	rawActive := firstNonEmpty(*activeWithin, cfg.ActiveWithin)
+	if rawActive != "" {
+		d, err := time.ParseDuration(rawActive)
+		if err != nil || d < 0 {
+			_, _ = fmt.Fprintf(stderr, "Error: invalid active-within duration %q\n", rawActive)
+			return 2
+		}
+		resolvedActiveWithin = d
+	}
+
+	resolvedIncludeDMs := cfg.IncludeDMs || *includeDMs
+	if runUrgent && !resolvedIncludeDMs {
+		if cfg.Urgent.IncludeDMs == nil || *cfg.Urgent.IncludeDMs {
+			resolvedIncludeDMs = true
+		}
+	}
+
 	opts := gchat.PollOptions{
 		Account:            firstNonEmpty(*account, cfg.Account),
-		UserName:           firstNonEmpty(*userName, cfg.UserName),
+		UserName:           resolvedUserName,
 		UserID:             firstNonEmpty(*userID, cfg.UserID),
 		Spaces:             overrideCSV(*spaces, cfg.Spaces),
 		ExcludeSpaces:      overrideCSV(*exclude, cfg.ExcludeSpaces),
 		AnnouncementSpaces: overrideCSV(*atAllMute, cfg.AnnouncementSpaces),
 		IgnorePrefixes:     overrideCSV(*ignorePrefix, cfg.IgnorePrefixes),
+		IncludeDMs:         resolvedIncludeDMs,
+		IncludeGroupChats:  cfg.IncludeGroupChats || *includeGroupChats,
+		ActiveWithin:       resolvedActiveWithin,
 		Concurrency:        cfg.Concurrency,
 	}
 
@@ -119,6 +200,9 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 	}
 
 	resolvedNotify := firstNonEmpty(*notifySpace, cfg.NotifySpace)
+	if strings.EqualFold(resolvedNotify, "none") {
+		resolvedNotify = ""
+	}
 	resolvedOut := firstNonEmpty(*outputPath, cfg.OutputPath)
 	if resolvedOut == "" {
 		defaultOut, err := config.DefaultOutputPath()
@@ -136,6 +220,19 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 		resolvedOut = expanded
 	}
 
+	if exec == nil {
+		if strings.TrimSpace(cfg.GogEnvFile) != "" {
+			extraEnv, err := config.ReadEnvFile(cfg.GogEnvFile)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error reading gog_env_file: %v\n", err)
+				return 1
+			}
+			exec = gchat.NewCLIExecutorWithEnv(extraEnv)
+		} else {
+			exec = gchat.NewCLIExecutor()
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
@@ -144,6 +241,20 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "Error polling Google Chat: %v\n", err)
 		return 1
+	}
+
+	if runUrgent {
+		summary, err := urgent.Run(ctx, report, urgentSettings, urgent.RunOptions{
+			InitOnly:     *urgentInit,
+			ModeOverride: *urgentMode,
+			MaxOverride:  *urgentMax,
+			ContextFetch: fetcher,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error running urgent classification: %v\n", err)
+			return 1
+		}
+		report.Urgent = summary
 	}
 
 	if !strings.EqualFold(resolvedOut, "none") {
