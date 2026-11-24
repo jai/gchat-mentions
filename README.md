@@ -1,21 +1,21 @@
 # Google Chat Mentions
 
-> Poll unread Google Chat mentions from the terminal, write an agent-readable JSON status file, and optionally post a digest.
+> Poll unread Google Chat mentions from the terminal, save JSON status for agents, and escalate urgent messages.
 
 [![CI](https://github.com/jai/gchat-mentions/actions/workflows/lint-cli.yml/badge.svg)](https://github.com/jai/gchat-mentions/actions/workflows/lint-cli.yml)
 [![Tests](https://github.com/jai/gchat-mentions/actions/workflows/test-unit-cli.yml/badge.svg)](https://github.com/jai/gchat-mentions/actions/workflows/test-unit-cli.yml)
 
-`gchat-mentions` is a small Go command-line tool for people who miss `@mentions` across busy Google Chat spaces. It reads unread messages through `gog` (a Google Workspace CLI) and filters out noise. Each run saves the latest result to a local JSON file that you or your AI agent can read.
+`gchat-mentions` is a Go command-line tool for people who miss `@mentions` in busy Google Chat spaces. It reads unread messages through `gog` (the Google Workspace CLI) and filters out automated noise. Each run saves the latest report to a local JSON file, posts an optional digest, and can send urgent messages to a webhook or command.
 
 ## Install with an AI agent
 
-Copy and paste this one-liner into Claude Code, Codex, Antigravity, or another coding agent on your computer:
+Paste this instruction into Claude Code, Codex, Antigravity, or another coding agent on your computer:
 
 ```text
 Follow https://github.com/jai/gchat-mentions/blob/main/docs/agent-setup.md to set up Google Chat mention tracking on this computer.
 ```
 
-See [docs/agent-setup.md](docs/agent-setup.md) for the full steps the agent follows.
+Read [the agent setup guide](docs/agent-setup.md) to see the full steps the agent follows.
 
 ## Install manually
 
@@ -23,23 +23,23 @@ See [docs/agent-setup.md](docs/agent-setup.md) for the full steps the agent foll
 
 - macOS or Linux.
 - [Go 1.25 or newer](https://go.dev/dl/).
-- [`gog`](https://github.com/steipete/gogcli) (the Google Workspace CLI) signed in to your Google Workspace account. See [the `gog` setup guide](docs/gog-setup.md) for step-by-step instructions.
+- [`gog`](https://github.com/steipete/gogcli) (the Google Workspace CLI) signed in to your Google Workspace account. Read [the `gog` setup guide](docs/gog-setup.md) for setup steps.
 
-### Steps
+### Setup steps
 
-1. Install and sign in to `gog` by following [docs/gog-setup.md](docs/gog-setup.md), then confirm your work account appears with `chat`:
+1. Sign in to `gog` by following [the `gog` setup guide](docs/gog-setup.md), then verify that your account lists `chat`:
 
    ```sh
    gog auth list
    ```
 
-2. Install `gchat-mentions`:
+2. Install the `gchat-mentions` binary:
 
    ```sh
    go install github.com/jai/gchat-mentions/cmd/gchat-mentions@latest
    ```
 
-   If you prefer to build from source instead, clone the repository and run `make build`:
+   To build from source instead, clone the repository and run `make build`:
 
    ```sh
    git clone https://github.com/jai/gchat-mentions.git
@@ -47,7 +47,7 @@ See [docs/agent-setup.md](docs/agent-setup.md) for the full steps the agent foll
    make build
    ```
 
-3. Generate a starter configuration file:
+3. Create a starter configuration file:
 
    ```sh
    gchat-mentions --init
@@ -55,21 +55,21 @@ See [docs/agent-setup.md](docs/agent-setup.md) for the full steps the agent foll
 
 4. Open `~/.config/gchat-mentions/config.yaml` and set `account` and `user_name`.
 
-5. Run a first check:
+5. Run your first check:
 
    ```sh
    gchat-mentions --format compact
    ```
 
-6. Optional: schedule recurring checks every two hours during work hours with `cron`:
+6. Schedule recurring digest checks with `cron` (optional):
 
    ```cron
-   0 8-20/2 * * * gchat-mentions --format compact >/dev/null 2>&1
+   0 8-20/2 * * * gchat-mentions --no-urgent --format compact >/dev/null 2>&1
    ```
 
 ## Output for agents and scripts
 
-Every run atomically writes the latest report to `~/.local/state/gchat-mentions/latest.json` (pass `--out none` to disable writing).
+Each run writes the latest report atomically to `~/.local/state/gchat-mentions/latest.json`. Pass `--out none` to skip writing the file.
 
 ```json
 {
@@ -99,34 +99,49 @@ Every run atomically writes the latest report to `~/.local/state/gchat-mentions/
 }
 ```
 
-## Configuration and key flags
+## Configuration and flags
 
-Settings live in `~/.config/gchat-mentions/config.yaml`. Command-line flags override config values for a single run. Run `gchat-mentions --help` for the full flag list.
+Settings live in `~/.config/gchat-mentions/config.yaml`. Command-line flags override config values for one run. Run `gchat-mentions --help` for the complete flag list.
 
 | Setting | Flag | Purpose |
 | --- | --- | --- |
 | `account` | `--account` | Google Workspace email authorized in `gog` |
-| `user_name` | `--user` | Display name for mention matching |
-| `user_id` | `--user-id` | Optional Google Chat user ID (`users/123`) |
-| `gog_env_file` | — | Optional `KEY=VALUE` env file loaded for headless `gog` runs |
-| `notify_space` | `--notify-space` | Optional space ID to post unread digests to (pass `none` to suppress) |
-| `output_path` | `--out` | JSON status file path (default `~/.local/state/gchat-mentions/latest.json`) |
-| `active_within` | `--active-within` | Only scan spaces active within this Go duration (for example `6h`, `168h`) |
+| `user_name` | `--user` | Display name used for mention matching |
+| `user_id` | `--user-id` | Google Chat user ID (`users/123`) |
+| `gog_env_file` | (config only) | `KEY=VALUE` file loaded for headless `gog` runs |
+| `notify_space` | `--notify-space` | Google Chat space ID for unread digests (pass `none` to disable) |
+| `output_path` | `--out` | JSON report path (default `~/.local/state/gchat-mentions/latest.json`) |
+| `active_within` | `--active-within` | Only scan spaces active within this duration (`6h`, `168h`) |
 | `include_dms` | `--include-dms` | Include unread direct messages |
 | `exclude_spaces` | `--exclude` | Space name patterns to skip |
-| `announcement_spaces` | `--atall-mute` | Spaces where `@all`/`@here`-only messages are muted |
+| `announcement_spaces` | `--atall-mute` | Spaces where `@all` and `@here` messages are muted |
 | `ignore_prefixes` | `--ignore-prefix` | Automated message prefixes to skip |
-| `urgent` | `--urgent`, `--no-urgent`, `--urgent-init`, `--urgent-test` | Optional LLM urgency classification and dry-run/live escalation |
+| `urgent` | `--urgent`, `--no-urgent`, `--urgent-init`, `--urgent-test` | Urgency classification and dry-run or live escalation |
 
-## Urgent mentions
+## Urgent triage
 
-`gchat-mentions` includes optional urgency classification for mentions and direct messages, supporting Cloudflare Clef / Clef-flash, TypeSafe, Cloudflare Workers AI, and OpenAI-compatible models in single or shadow (multi-provider) mode with rate-limited webhook or fallback command escalation. It runs in `dry-run` mode by default.
+`gchat-mentions` can score new mentions and direct messages for actionability and urgency. You edit the classifier questions in `~/.config/gchat-mentions/urgent-prompts.yaml` without rebuilding the binary.
 
-See [docs/urgent-mentions.md](docs/urgent-mentions.md) for setup, provider configuration, and safe rollout steps.
+Supported classifiers include:
 
-Exit codes: `0` on success, `1` on runtime or poll errors, and `2` on invalid flags or missing required settings.
+- Cloudflare Clef and Clef-flash (Cloudflare Workers AI decision models)
+- TypeSafe SystemOne
+- Cloudflare Workers AI text models
+- Any OpenAI-compatible chat completions endpoint
+
+Urgent triage defaults to `dry-run` mode. In `live` mode, rate-limited escalations post JSON to a webhook (with custom URL paths, payload templates, and field limits) or run a fallback command. API keys stay in local `chmod 600` env files referenced from `config.yaml`.
+
+Read [the urgent mentions guide](docs/urgent-mentions.md) for provider setup, prompt editing, and rollout steps.
+
+## Exit codes
+
+- `0`: Poll completed.
+- `1`: Runtime or poll error.
+- `2`: Invalid flags or missing required settings.
 
 ## Development
+
+Run lint, tests, and build locally:
 
 ```sh
 make lint
@@ -134,4 +149,4 @@ make all-tests
 make build
 ```
 
-See [docs/workflow.md](docs/workflow.md) for the CI layout and repository workflow.
+Read [the repository workflow guide](docs/workflow.md) for CI details.
