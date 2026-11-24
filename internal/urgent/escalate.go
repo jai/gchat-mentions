@@ -188,10 +188,10 @@ func BuildBrief(rec VerdictRecord, targetText string, ctxMsgs []ContextMessage, 
 			label = "thread"
 		}
 		lines = append(lines, fmt.Sprintf("[context: %s] %s at %s: %s",
-			label, m.Sender, FormatLocal(m.At, settings.Location), Scrub(TruncateRunes(m.Text, maxMsgChars))))
+			label, m.Sender, FormatLocal(m.At, settings.Location), ScrubBrief(TruncateRunes(m.Text, maxMsgChars))))
 	}
 	lines = append(lines,
-		fmt.Sprintf("[TARGET] %s at %s: %s", rec.Sender, rec.TSLocal, Scrub(TruncateRunes(targetText, 1500))),
+		fmt.Sprintf("[TARGET] %s at %s: %s", rec.Sender, rec.TSLocal, ScrubBrief(TruncateRunes(targetText, 1500))),
 		"=== END UNTRUSTED DATA ===",
 	)
 	return strings.Join(lines, "\n") + "\n"

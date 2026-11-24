@@ -182,3 +182,18 @@ func TestWriteStarterCreatesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("second WriteStarter() modified existing file:\ngot:  %q\nwant: %q", string(got), string(custom))
 	}
 }
+
+func TestWriteStarterPromptsAndLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "urgent-prompts.yaml")
+	created, err := WriteStarterPrompts(path)
+	if err != nil || !created {
+		t.Fatalf("WriteStarterPrompts() = %v, %v", created, err)
+	}
+	qs, err := LoadPromptsFile(path, true)
+	if err != nil {
+		t.Fatalf("LoadPromptsFile() error: %v", err)
+	}
+	if qs["needs_action"].Type != "noul" || qs["urgent"].Type != "noul" {
+		t.Fatalf("expected needs_action and urgent noul questions, got %+v", qs)
+	}
+}

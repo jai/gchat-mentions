@@ -215,10 +215,11 @@ func Run(ctx context.Context, report *gchat.Report, settings *Settings, opts Run
 			}
 		}
 		ctxMsgs := BuildContext(msg, threadMsgs, spacePool[msg.SpaceID])
-		stateText := BuildState(msg, ctxMsgs, c.Broadcast, settings.Location)
+		statePayload := BuildState(msg, ctxMsgs, settings.Location)
 
-		verdicts := ClassifyAll(ctx, stateText, settings, opts.HTTPClient, retryDelay)
-		wouldEsc := ShouldEscalate(verdicts, settings.Rule, settings.Threshold)
+		verdicts := ClassifyAll(ctx, statePayload, settings, opts.HTTPClient, retryDelay)
+		actionable := IsActionable(verdicts, settings.Rule)
+		wouldEsc := ShouldEscalate(verdicts, settings.Rule, settings)
 
 		rec := VerdictRecord{
 			TSUTC:         nowFn().UTC().Format(time.RFC3339),
@@ -233,6 +234,7 @@ func Run(ctx context.Context, report *gchat.Report, settings *Settings, opts Run
 			Broadcast:     c.Broadcast,
 			TextExcerpt:   TruncateRunes(strings.ReplaceAll(msg.Text, "\n", " "), 160),
 			Verdicts:      verdicts,
+			Actionable:    actionable,
 			Agree:         VerdictsAgree(verdicts),
 			WouldEscalate: wouldEsc,
 		}
@@ -272,28 +274,17 @@ func Run(ctx context.Context, report *gchat.Report, settings *Settings, opts Run
 				}
 				summary.Escalations++
 			}
-
-			reason := ""
-			for _, v := range verdicts {
-				if v.Urgent && v.Reason != "" {
-					reason = v.Reason
-					break
-				}
-			}
-			summary.UrgentItems = append(summary.UrgentItems, gchat.UrgentItem{
-				MessageID:   msg.ID,
-				SpaceName:   msg.SpaceName,
-				SpaceType:   msg.SpaceType,
-				Sender:      msg.Sender,
-				TextExcerpt: rec.TextExcerpt,
-				Link:        msg.Link,
-				Time:        rec.TSLocal,
-				Broadcast:   c.Broadcast,
-				Escalation:  rec.Escalation.Mode,
-				Reason:      reason,
-			})
 		} else {
 			rec.Escalation = EscalationInfo{Mode: "skipped", Actions: []string{}}
+		}
+
+		item := buildSummaryItem(msg, rec, verdicts, c.Broadcast)
+		if actionable {
+			summary.ActionableCount++
+			summary.ActionableItems = append(summary.ActionableItems, item)
+		}
+		if wouldEsc {
+			summary.UrgentItems = append(summary.UrgentItems, item)
 		}
 
 		lineBytes, err := json.Marshal(rec)
@@ -315,15 +306,49 @@ func Run(ctx context.Context, report *gchat.Report, settings *Settings, opts Run
 
 	summary.CostUSD = roundTo(summary.CostUSD, 6)
 	logLine := fmt.Sprintf(
-		"%s run=scheduled escalation=%s exit=0 candidates=%d new=%d stale=%d classified=%d overflow=%d urgent=%d provider_errors=%d escalations=%d cost_usd=%.6f total_s=%.1f",
+		"%s run=scheduled escalation=%s exit=0 candidates=%d new=%d stale=%d classified=%d overflow=%d actionable=%d urgent=%d provider_errors=%d escalations=%d cost_usd=%.6f total_s=%.1f",
 		now.In(settings.Location).Format(time.RFC3339),
 		mode, summary.Candidates, summary.New, summary.Stale, summary.Classified, summary.Overflow,
-		summary.UrgentCount, summary.ProviderErrors, summary.Escalations, summary.CostUSD,
+		summary.ActionableCount, summary.UrgentCount, summary.ProviderErrors, summary.Escalations, summary.CostUSD,
 		time.Since(started).Seconds(),
 	)
 	_ = appendLine(runLogPath, logLine)
 
 	return summary, nil
+}
+
+func buildSummaryItem(msg gchat.Message, rec VerdictRecord, verdicts []ProviderVerdict, broadcast bool) gchat.UrgentItem {
+	var needsAct, urgScore *float64
+	reason := ""
+	for _, v := range verdicts {
+		if v.Error != "" {
+			continue
+		}
+		if needsAct == nil && v.NeedsAction != nil {
+			needsAct = v.NeedsAction
+		}
+		if urgScore == nil && v.UrgentScore != nil {
+			urgScore = v.UrgentScore
+		}
+		if reason == "" && v.Reason != "" {
+			reason = v.Reason
+		}
+	}
+	return gchat.UrgentItem{
+		MessageID:   msg.ID,
+		SpaceName:   msg.SpaceName,
+		SpaceType:   msg.SpaceType,
+		Sender:      msg.Sender,
+		TextExcerpt: rec.TextExcerpt,
+		Link:        msg.Link,
+		Time:        rec.TSLocal,
+		Broadcast:   broadcast,
+		Actionable:  rec.Actionable,
+		NeedsAction: needsAct,
+		UrgentScore: urgScore,
+		Escalation:  rec.Escalation.Mode,
+		Reason:      reason,
+	}
 }
 
 // RunTest exercises classification and dry-run escalation against a synthetic outage message.
@@ -367,18 +392,22 @@ func RunTest(ctx context.Context, settings *Settings, offline bool, opts RunOpti
 	}
 
 	ctxMsgs := BuildContext(msg, []gchat.Message{ctxMsg}, nil)
-	stateText := BuildState(msg, ctxMsgs, false, settings.Location)
+	statePayload := BuildState(msg, ctxMsgs, settings.Location)
 
 	var verdicts []ProviderVerdict
 	if offline || len(settings.Providers) == 0 {
+		actScore, urgScore := 0.96, 0.95
 		if len(settings.Providers) == 0 {
 			verdicts = []ProviderVerdict{{
-				Name:       "synthetic",
-				Provider:   "offline",
-				Model:      "canned",
-				Urgent:     true,
-				Confidence: 0.95,
-				Reason:     "offline canned test verdict",
+				Name:        "synthetic",
+				Provider:    "offline",
+				Model:       "canned",
+				Actionable:  true,
+				Urgent:      true,
+				NeedsAction: &actScore,
+				UrgentScore: &urgScore,
+				Confidence:  0.90,
+				Reason:      "offline canned test verdict",
 			}}
 		} else {
 			for _, p := range settings.Providers {
@@ -387,12 +416,15 @@ func RunTest(ctx context.Context, settings *Settings, offline bool, opts RunOpti
 					name = p.Type
 				}
 				verdicts = append(verdicts, ProviderVerdict{
-					Name:       name,
-					Provider:   p.Type,
-					Model:      p.Model,
-					Urgent:     true,
-					Confidence: 0.95,
-					Reason:     "offline canned test verdict",
+					Name:        name,
+					Provider:    p.Type,
+					Model:       p.Model,
+					Actionable:  true,
+					Urgent:      true,
+					NeedsAction: &actScore,
+					UrgentScore: &urgScore,
+					Confidence:  0.90,
+					Reason:      "offline canned test verdict",
 				})
 			}
 		}
@@ -401,10 +433,11 @@ func RunTest(ctx context.Context, settings *Settings, offline bool, opts RunOpti
 		if retryDelay == 0 {
 			retryDelay = 1500 * time.Millisecond
 		}
-		verdicts = ClassifyAll(ctx, stateText, settings, opts.HTTPClient, retryDelay)
+		verdicts = ClassifyAll(ctx, statePayload, settings, opts.HTTPClient, retryDelay)
 	}
 
-	wouldEsc := ShouldEscalate(verdicts, settings.Rule, settings.Threshold)
+	actionable := IsActionable(verdicts, settings.Rule)
+	wouldEsc := ShouldEscalate(verdicts, settings.Rule, settings)
 	rec := VerdictRecord{
 		TSUTC:         now.Format(time.RFC3339),
 		TSLocal:       FormatLocal(msg.Time, settings.Location),
@@ -417,6 +450,7 @@ func RunTest(ctx context.Context, settings *Settings, offline bool, opts RunOpti
 		Broadcast:     false,
 		TextExcerpt:   TruncateRunes(msg.Text, 160),
 		Verdicts:      verdicts,
+		Actionable:    actionable,
 		Agree:         VerdictsAgree(verdicts),
 		WouldEscalate: wouldEsc,
 		Test:          true,

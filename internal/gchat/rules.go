@@ -17,33 +17,38 @@ type SpaceMentions struct {
 
 // UrgentSummary captures optional urgency classification results attached to a Report.
 type UrgentSummary struct {
-	Mode           string       `json:"mode"`
-	Candidates     int          `json:"candidates"`
-	New            int          `json:"new"`
-	Stale          int          `json:"stale"`
-	Classified     int          `json:"classified"`
-	Overflow       int          `json:"overflow"`
-	UrgentCount    int          `json:"urgent_count"`
-	Escalations    int          `json:"escalations"`
-	ProviderErrors int          `json:"provider_errors"`
-	CostUSD        float64      `json:"cost_usd"`
-	Skipped        bool         `json:"skipped,omitempty"`
-	SkipReason     string       `json:"skip_reason,omitempty"`
-	UrgentItems    []UrgentItem `json:"urgent_items,omitempty"`
+	Mode            string       `json:"mode"`
+	Candidates      int          `json:"candidates"`
+	New             int          `json:"new"`
+	Stale           int          `json:"stale"`
+	Classified      int          `json:"classified"`
+	Overflow        int          `json:"overflow"`
+	ActionableCount int          `json:"actionable_count"`
+	UrgentCount     int          `json:"urgent_count"`
+	Escalations     int          `json:"escalations"`
+	ProviderErrors  int          `json:"provider_errors"`
+	CostUSD         float64      `json:"cost_usd"`
+	Skipped         bool         `json:"skipped,omitempty"`
+	SkipReason      string       `json:"skip_reason,omitempty"`
+	ActionableItems []UrgentItem `json:"actionable_items,omitempty"`
+	UrgentItems     []UrgentItem `json:"urgent_items,omitempty"`
 }
 
-// UrgentItem is a concise summary of a mention flagged as urgent.
+// UrgentItem is a concise summary of a mention flagged as actionable or urgent.
 type UrgentItem struct {
-	MessageID   string `json:"message_id"`
-	SpaceName   string `json:"space_name"`
-	SpaceType   string `json:"space_type,omitempty"`
-	Sender      string `json:"sender"`
-	TextExcerpt string `json:"text_excerpt"`
-	Link        string `json:"link,omitempty"`
-	Time        string `json:"time"`
-	Broadcast   bool   `json:"broadcast"`
-	Escalation  string `json:"escalation"`
-	Reason      string `json:"reason,omitempty"`
+	MessageID   string   `json:"message_id"`
+	SpaceName   string   `json:"space_name"`
+	SpaceType   string   `json:"space_type,omitempty"`
+	Sender      string   `json:"sender"`
+	TextExcerpt string   `json:"text_excerpt"`
+	Link        string   `json:"link,omitempty"`
+	Time        string   `json:"time"`
+	Broadcast   bool     `json:"broadcast"`
+	Actionable  bool     `json:"actionable"`
+	NeedsAction *float64 `json:"needs_action,omitempty"`
+	UrgentScore *float64 `json:"urgent_score,omitempty"`
+	Escalation  string   `json:"escalation"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 // Report is the normalized unread-mentions result written to state and stdout.

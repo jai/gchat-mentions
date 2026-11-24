@@ -29,6 +29,8 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 	var (
 		configPath        = fs.String("config", "", "Path to YAML config file (default: ~/.config/gchat-mentions/config.yaml)")
 		initConfig        = fs.Bool("init", false, "Create a starter config file if absent and exit")
+		initPrompts       = fs.Bool("init-prompts", false, "Create a starter urgent-prompts.yaml file if absent and exit")
+		promptsPath       = fs.String("prompts", "", "Path to YAML urgent prompts file (overrides config urgent.prompts_file)")
 		account           = fs.String("account", "", "Google Workspace email authorized in gog (overrides config)")
 		userName          = fs.String("user", "", "Display name for mention matching (overrides config)")
 		userID            = fs.String("user-id", "", "Google Chat user ID, e.g. users/123 (overrides config)")
@@ -93,6 +95,36 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 		return 0
 	}
 
+	if *initPrompts {
+		target := *promptsPath
+		if target == "" {
+			var err error
+			target, err = config.DefaultPromptsPath()
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+				return 1
+			}
+		} else {
+			var err error
+			target, err = config.ExpandHome(target)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+				return 1
+			}
+		}
+		created, err := config.WriteStarterPrompts(target)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		if created {
+			_, _ = fmt.Fprintf(stdout, "Created starter prompts at %s\n", target)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "Prompts file already exists at %s\n", target)
+		}
+		return 0
+	}
+
 	switch *format {
 	case "json", "compact", "text":
 	default:
@@ -120,6 +152,10 @@ func run(args []string, stdout, stderr io.Writer, exec gchat.Executor) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
+	}
+	if strings.TrimSpace(*promptsPath) != "" {
+		cfg.Urgent.PromptsFile = strings.TrimSpace(*promptsPath)
+		cfg.Urgent.Questions = nil
 	}
 
 	resolvedUserName := firstNonEmpty(*userName, cfg.UserName)

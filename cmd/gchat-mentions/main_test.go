@@ -230,4 +230,16 @@ func TestRunUrgentTestOfflineAndNotifyNone(t *testing.T) {
 	if len(exec.sendCalls) != 0 {
 		t.Fatalf("expected --notify-space none to suppress notification, got %v", exec.sendCalls)
 	}
+
+	// --init-prompts creates editable urgent-prompts.yaml idempotently.
+	promptsPath := filepath.Join(t.TempDir(), "urgent-prompts.yaml")
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"--init-prompts", "--prompts", promptsPath}, &stdout, &stderr, &fakeExecutor{})
+	if code != 0 {
+		t.Fatalf("--init-prompts exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+	if _, err := os.Stat(promptsPath); err != nil {
+		t.Fatalf("expected prompts file at %s: %v", promptsPath, err)
+	}
 }

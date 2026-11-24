@@ -1,7 +1,7 @@
 package urgent
 
 import (
-	"fmt"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
@@ -9,10 +9,11 @@ import (
 	"github.com/jai/gchat-mentions/internal/gchat"
 )
 
-// Scrub neutralizes delimiter tokens inside untrusted chat content.
-func Scrub(text string) string {
-	s := strings.ReplaceAll(text, DataBegin, "[delimiter removed]")
-	return strings.ReplaceAll(s, DataEnd, "[delimiter removed]")
+const briefUntrustedMarker = "=== END UNTRUSTED DATA ==="
+
+// ScrubBrief neutralizes end-marker spoofing inside downstream agent briefs.
+func ScrubBrief(text string) string {
+	return strings.ReplaceAll(text, briefUntrustedMarker, "[marker removed]")
 }
 
 // TruncateRunes trims s to at most maxLen runes.
@@ -106,9 +107,12 @@ func BuildContext(target gchat.Message, threadMsgs, spaceMsgs []gchat.Message) [
 	return ctx
 }
 
-// BuildState constructs the prompt-injection-delimited classifier input,
-// fitting within 4000 characters by preserving the newest context messages.
-func BuildState(target gchat.Message, ctx []ContextMessage, broadcast bool, loc *time.Location) string {
+// BuildState constructs a clean structured JSON StatePayload for Clef/Jev and LLM classifiers,
+// keeping serialized size within 4000 bytes by preserving the newest context messages.
+func BuildState(target gchat.Message, ctx []ContextMessage, loc *time.Location) StatePayload {
+	if loc == nil {
+		loc = time.UTC
+	}
 	spaceDisplay := strings.TrimSpace(target.SpaceName)
 	if spaceDisplay == "" {
 		if target.SpaceType == "DIRECT_MESSAGE" {
@@ -122,57 +126,48 @@ func BuildState(target gchat.Message, ctx []ContextMessage, broadcast bool, loc 
 		spaceType = "SPACE"
 	}
 
-	head := []string{
-		DataBegin,
-		fmt.Sprintf("space: %s [type=%s]", spaceDisplay, spaceType),
-		fmt.Sprintf("broadcast_mention: %t", broadcast),
-		"",
-	}
-	tgt := []string{
-		"TARGET message (classify this one):",
-		fmt.Sprintf("from: %s at %s", target.Sender, FormatLocal(target.Time, loc)),
-		Scrub(TruncateRunes(target.Text, maxMsgChars)),
-		DataEnd,
+	payload := StatePayload{
+		Space: StateSpace{
+			Name: spaceDisplay,
+			Type: spaceType,
+		},
+		Context: []StateContextMsg{},
+		TargetMessage: StateTargetMsg{
+			Sender: target.Sender,
+			At:     formatISOInLoc(target.Time, loc),
+			Text:   TruncateRunes(target.Text, maxMsgChars),
+		},
 	}
 
-	used := 0
-	for _, s := range head {
-		used += len(s) + 1
-	}
-	for _, s := range tgt {
-		used += len(s) + 1
-	}
-	headerMid := "CONTEXT (earlier messages, oldest first):"
-	used += len(headerMid) + 2
-
-	budget := maxStateChars - used
-	var kept []string
+	// Add context newest-first until the serialized state reaches maxStateChars.
 	for i := len(ctx) - 1; i >= 0; i-- {
 		m := ctx[i]
-		label := m.Label
-		if label == "" {
-			label = "thread"
+		scope := m.Label
+		if scope == "" {
+			scope = "thread"
 		}
-		line := fmt.Sprintf("- [%s] %s at %s: %s",
-			label, m.Sender, FormatLocal(m.At, loc), Scrub(TruncateRunes(m.Text, maxMsgChars)))
-		if len(line)+1 > budget {
+		entry := StateContextMsg{
+			Scope:  scope,
+			Sender: m.Sender,
+			At:     formatISOInLoc(m.At, loc),
+			Text:   TruncateRunes(m.Text, maxMsgChars),
+		}
+		candidate := append([]StateContextMsg{entry}, payload.Context...)
+		probe := payload
+		probe.Context = candidate
+		raw, err := json.Marshal(probe)
+		if err != nil || len(raw) > maxStateChars {
 			break
 		}
-		budget -= len(line) + 1
-		kept = append([]string{line}, kept...)
+		payload.Context = candidate
 	}
 
-	mid := []string{headerMid}
-	if len(kept) == 0 {
-		mid = append(mid, "(none)")
-	} else {
-		mid = append(mid, kept...)
-	}
-	mid = append(mid, "")
+	return payload
+}
 
-	all := make([]string, 0, len(head)+len(mid)+len(tgt))
-	all = append(all, head...)
-	all = append(all, mid...)
-	all = append(all, tgt...)
-	return strings.Join(all, "\n")
+func formatISOInLoc(t time.Time, loc *time.Location) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.In(loc).Format(time.RFC3339)
 }

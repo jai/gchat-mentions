@@ -31,25 +31,42 @@ type Config struct {
 	Urgent             UrgentConfig `yaml:"urgent,omitempty"`
 }
 
+// QuestionConfig defines one typed Clef/Jev decision question loaded from config or prompts_file.
+type QuestionConfig struct {
+	Type         string `yaml:"type" json:"type"` // noul | choice | score
+	Instructions string `yaml:"instructions" json:"instructions"`
+	Criteria     any    `yaml:"criteria,omitempty" json:"criteria,omitempty"`
+}
+
+// PromptsFile is the YAML/JSON schema for an external urgent prompts file.
+type PromptsFile struct {
+	Questions map[string]QuestionConfig `yaml:"questions" json:"questions"`
+}
+
 // UrgentConfig configures optional urgency classification and escalation.
 type UrgentConfig struct {
-	Enabled           bool              `yaml:"enabled,omitempty"`
-	Mode              string            `yaml:"mode,omitempty"`
-	LiveFlagFile      string            `yaml:"live_flag_file,omitempty"`
-	Timezone          string            `yaml:"timezone,omitempty"`
-	UserContext       string            `yaml:"user_context,omitempty"`
-	Definition        string            `yaml:"definition,omitempty"`
-	IncludeDMs        *bool             `yaml:"include_dms,omitempty"`
-	Threshold         float64           `yaml:"threshold,omitempty"`
-	Rule              string            `yaml:"rule,omitempty"`
-	MaxPerRun         int               `yaml:"max_per_run,omitempty"`
-	MaxAgeHours       float64           `yaml:"max_age_hours,omitempty"`
-	SeenRetentionDays int               `yaml:"seen_retention_days,omitempty"`
-	StateDir          string            `yaml:"state_dir,omitempty"`
-	QuietHours        *QuietHoursConfig `yaml:"quiet_hours,omitempty"`
-	RateLimit         RateLimitConfig   `yaml:"rate_limit,omitempty"`
-	Providers         []ProviderConfig  `yaml:"providers,omitempty"`
-	Escalation        EscalationConfig  `yaml:"escalation,omitempty"`
+	Enabled                 bool                      `yaml:"enabled,omitempty"`
+	Mode                    string                    `yaml:"mode,omitempty"`
+	LiveFlagFile            string                    `yaml:"live_flag_file,omitempty"`
+	Timezone                string                    `yaml:"timezone,omitempty"`
+	UserContext             string                    `yaml:"user_context,omitempty"`
+	Definition              string                    `yaml:"definition,omitempty"`
+	PromptsFile             string                    `yaml:"prompts_file,omitempty"`
+	Questions               map[string]QuestionConfig `yaml:"questions,omitempty"`
+	IncludeDMs              *bool                     `yaml:"include_dms,omitempty"`
+	Threshold               float64                   `yaml:"threshold,omitempty"`
+	ActionThreshold         float64                   `yaml:"action_threshold,omitempty"`
+	UrgentThreshold         float64                   `yaml:"urgent_threshold,omitempty"`
+	UrgentOverrideThreshold *float64                  `yaml:"urgent_override_threshold,omitempty"`
+	Rule                    string                    `yaml:"rule,omitempty"`
+	MaxPerRun               int                       `yaml:"max_per_run,omitempty"`
+	MaxAgeHours             float64                   `yaml:"max_age_hours,omitempty"`
+	SeenRetentionDays       int                       `yaml:"seen_retention_days,omitempty"`
+	StateDir                string                    `yaml:"state_dir,omitempty"`
+	QuietHours              *QuietHoursConfig         `yaml:"quiet_hours,omitempty"`
+	RateLimit               RateLimitConfig           `yaml:"rate_limit,omitempty"`
+	Providers               []ProviderConfig          `yaml:"providers,omitempty"`
+	Escalation              EscalationConfig          `yaml:"escalation,omitempty"`
 }
 
 // QuietHoursConfig defines local hours [Start, End) where paging is disallowed.
@@ -68,7 +85,7 @@ type RateLimitConfig struct {
 // ProviderConfig defines one urgency classifier backend.
 type ProviderConfig struct {
 	Name           string `yaml:"name"`
-	Type           string `yaml:"type"` // typesafe | cloudflare | openai-compatible
+	Type           string `yaml:"type"` // cloudflare-clef | typesafe | cloudflare | openai-compatible
 	Model          string `yaml:"model,omitempty"`
 	URL            string `yaml:"url,omitempty"`
 	APIKeyEnv      string `yaml:"api_key_env,omitempty"`
@@ -130,6 +147,18 @@ func DefaultConfigPath() (string, error) {
 	return filepath.Join(home, ".config", "gchat-mentions", "config.yaml"), nil
 }
 
+// DefaultPromptsPath returns $XDG_CONFIG_HOME/gchat-mentions/urgent-prompts.yaml or ~/.config/gchat-mentions/urgent-prompts.yaml.
+func DefaultPromptsPath() (string, error) {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "gchat-mentions", "urgent-prompts.yaml"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "gchat-mentions", "urgent-prompts.yaml"), nil
+}
+
 // DefaultOutputPath returns $XDG_STATE_HOME/gchat-mentions/latest.json or ~/.local/state/gchat-mentions/latest.json.
 func DefaultOutputPath() (string, error) {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
@@ -152,6 +181,41 @@ func DefaultUrgentStateDir() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".local", "state", "gchat-mentions", "urgent"), nil
+}
+
+// LoadPromptsFile reads an external YAML/JSON urgent prompts file.
+// If explicit is false and the default file does not exist, returns (nil, nil).
+func LoadPromptsFile(path string, explicit bool) (map[string]QuestionConfig, error) {
+	if strings.TrimSpace(path) == "" {
+		var err error
+		path, err = DefaultPromptsPath()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		path, err = ExpandHome(strings.TrimSpace(path))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !explicit && errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read prompts file %s: %w", path, err)
+	}
+
+	var pf PromptsFile
+	if err := yaml.Unmarshal(data, &pf); err != nil {
+		return nil, fmt.Errorf("parse prompts file %s: %w", path, err)
+	}
+	if len(pf.Questions) == 0 {
+		return nil, fmt.Errorf("prompts file %s defines no questions", path)
+	}
+	return pf.Questions, nil
 }
 
 // ReadEnvFile parses a simple KEY=VALUE file (supporting optional "export " prefix and quotes).
@@ -272,15 +336,48 @@ announcement_spaces: []
 # Optional: Ignore automated messages starting with any of these prefixes
 ignore_prefixes: []
 
-# Optional: Classify new mentions for urgency and run dry-run/live escalations.
+# Optional: Classify new mentions for actionability and urgency.
+# Run 'gchat-mentions --init-prompts' to create ~/.config/gchat-mentions/urgent-prompts.yaml.
 # See docs/urgent-mentions.md for full configuration.
 # urgent:
 #   enabled: false
 #   mode: dry-run
 #   timezone: UTC
-#   threshold: 0.8
+#   user_context: "Engineering Lead"
+#   prompts_file: ~/.config/gchat-mentions/urgent-prompts.yaml
+#   action_threshold: 0.70
+#   urgent_threshold: 0.70
+#   urgent_override_threshold: 0.85
 #   rule: either
 #   providers: []
+`
+
+const starterPromptsTemplate = `# Classifier questions for gchat-mentions urgent triage (Clef / Jev schema).
+# Edit this file freely — changes apply on the next run without rebuilding.
+# Placeholders {{user_name}} and {{user_context}} are substituted from config.yaml.
+questions:
+  needs_action:
+    type: noul
+    instructions: >-
+      From the Google Chat messages provided, does target_message indicate that
+      {{recipient}} needs to personally act, approve, decide, or reply?
+    criteria:
+      "true": >-
+        Target message asks or expects {{user_name}} personally to act, approve,
+        decide, unblock, or reply, and is not already resolved in context.
+      "false": >-
+        Informational update, status notice, automated digest, broadcast announcement,
+        addressed to someone else, or already resolved in context.
+  urgent:
+    type: noul
+    instructions: >-
+      For {{recipient}}, would the request in target_message generally be considered urgent?
+    criteria:
+      "true": >-
+        Time-sensitive issue that needs attention soon (active outage or incident,
+        someone actively blocked, or a short deadline).
+      "false": >-
+        Can wait for normal async review, routine check-in, or informational only.
 `
 
 // WriteStarter atomically creates a starter config file if it does not already exist.
@@ -299,9 +396,31 @@ func WriteStarter(path string) (bool, error) {
 			return false, err
 		}
 	}
+	return writeFileIfAbsent(path, starterConfigTemplate)
+}
 
+// WriteStarterPrompts creates a starter urgent-prompts.yaml file if it does not exist.
+// Returns true if created, false if it already existed.
+func WriteStarterPrompts(path string) (bool, error) {
+	if path == "" {
+		var err error
+		path, err = DefaultPromptsPath()
+		if err != nil {
+			return false, err
+		}
+	} else {
+		var err error
+		path, err = ExpandHome(path)
+		if err != nil {
+			return false, err
+		}
+	}
+	return writeFileIfAbsent(path, starterPromptsTemplate)
+}
+
+func writeFileIfAbsent(path, content string) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false, fmt.Errorf("create config directory: %w", err)
+		return false, fmt.Errorf("create directory: %w", err)
 	}
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -309,15 +428,15 @@ func WriteStarter(path string) (bool, error) {
 		if errors.Is(err, os.ErrExist) {
 			return false, nil
 		}
-		return false, fmt.Errorf("create config %s: %w", path, err)
+		return false, fmt.Errorf("create %s: %w", path, err)
 	}
-	if _, err := f.WriteString(starterConfigTemplate); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
-		return false, fmt.Errorf("write config %s: %w", path, err)
+		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
-		return false, fmt.Errorf("close config %s: %w", path, err)
+		return false, fmt.Errorf("close %s: %w", path, err)
 	}
 	return true, nil
 }
