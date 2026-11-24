@@ -22,8 +22,9 @@ const (
 	defaultTypesafeModel   = "jev-1.14.0"
 	typesafeUSDPerInputTok = 0.042 / 1e6
 
-	defaultCloudflareModel = "@cf/meta/llama-3.1-8b-instruct-fast"
-	cloudflareUSDPerNeuron = 0.011 / 1000
+	defaultCloudflareModel     = "@cf/meta/llama-3.1-8b-instruct-fast"
+	defaultCloudflareClefModel = "@cf/cloudflare/clef-flash"
+	cloudflareUSDPerNeuron     = 0.011 / 1000
 )
 
 // HTTPDoer abstracts *http.Client for deterministic testing.
@@ -201,8 +202,14 @@ func classifyOne(ctx context.Context, state string, p config.ProviderConfig, set
 	switch pType {
 	case "typesafe":
 		v = callTypesafe(callCtx, state, name, p, settings, client, retryDelay)
+	case "cloudflare-clef":
+		v = callCloudflareClef(callCtx, state, name, p, settings, client, retryDelay)
 	case "cloudflare":
-		v = callCloudflare(callCtx, state, name, p, settings, client, retryDelay)
+		if isCloudflareClefModel(p.Model) {
+			v = callCloudflareClef(callCtx, state, name, p, settings, client, retryDelay)
+		} else {
+			v = callCloudflare(callCtx, state, name, p, settings, client, retryDelay)
+		}
 	case "openai-compatible", "openai":
 		v = callOpenAICompat(callCtx, state, name, p, settings, client, retryDelay)
 	default:
@@ -304,6 +311,118 @@ func parseTypesafeResponse(name, defaultModel string, raw []byte) ProviderVerdic
 	v.Reason = fmt.Sprintf("p=%.2f, kind=%s", noul, kind)
 	if resp.Usage != nil && resp.Usage.InputTokens != nil {
 		cost := roundTo(*resp.Usage.InputTokens*typesafeUSDPerInputTok, 8)
+		v.CostUSD = &cost
+	}
+	return v
+}
+
+func isCloudflareClefModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "@cf/cloudflare/clef")
+}
+
+func decisionQuestions(settings *Settings) map[string]any {
+	return map[string]any{
+		"urgent": map[string]any{
+			"type":         "noul",
+			"instructions": urgencyQuestion(settings.UserName, settings.Definition),
+		},
+		"kind": map[string]any{
+			"type":         "choice",
+			"instructions": "What kind of message is the TARGET message?",
+			"criteria":     kindCriteria(settings.UserName),
+		},
+	}
+}
+
+func callCloudflareClef(ctx context.Context, state, name string, p config.ProviderConfig, settings *Settings, client HTTPDoer, retryDelay time.Duration) ProviderVerdict {
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = defaultCloudflareClefModel
+	}
+	acctEnv := strings.TrimSpace(p.AccountIDEnv)
+	if acctEnv == "" {
+		acctEnv = "CLOUDFLARE_ACCOUNT_ID"
+	}
+	keyEnv := strings.TrimSpace(p.APIKeyEnv)
+	if keyEnv == "" {
+		keyEnv = "CLOUDFLARE_API_TOKEN"
+	}
+
+	v := ProviderVerdict{Name: name, Provider: "cloudflare-clef", Model: model}
+	acct, err := lookupSecret(acctEnv, p.EnvFile)
+	if err != nil {
+		v.Error = TruncateRunes(err.Error(), 240)
+		return v
+	}
+	token, err := lookupSecret(keyEnv, p.EnvFile)
+	if err != nil {
+		v.Error = TruncateRunes(err.Error(), 240)
+		return v
+	}
+	if acct == "" || token == "" {
+		v.Error = fmt.Sprintf("missing %s/%s", acctEnv, keyEnv)
+		return v
+	}
+
+	url := strings.TrimSpace(p.URL)
+	if url == "" {
+		url = fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/run/%s", acct, model)
+	}
+
+	reqBody := map[string]any{
+		"state":     state,
+		"questions": decisionQuestions(settings),
+	}
+
+	_, raw, err := postJSON(ctx, client, url, map[string]string{"Authorization": "Bearer " + token}, reqBody, retryDelay)
+	if err != nil {
+		v.Error = TruncateRunes(err.Error(), 240)
+		return v
+	}
+	return parseCloudflareClefResponse(name, model, raw)
+}
+
+func parseCloudflareClefResponse(name, defaultModel string, raw []byte) ProviderVerdict {
+	v := ProviderVerdict{Name: name, Provider: "cloudflare-clef", Model: defaultModel}
+	var env struct {
+		Result *struct {
+			Model   string `json:"model"`
+			Answers struct {
+				Urgent *struct {
+					Noul *float64 `json:"noul"`
+				} `json:"urgent"`
+				Kind *struct {
+					Choice string `json:"choice"`
+				} `json:"kind"`
+			} `json:"answers"`
+			Usage *struct {
+				Neurons *float64 `json:"neurons"`
+			} `json:"usage"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		v.Error = TruncateRunes("parse: "+err.Error(), 200)
+		return v
+	}
+	if env.Result == nil || env.Result.Answers.Urgent == nil || env.Result.Answers.Urgent.Noul == nil {
+		v.Error = "parse: missing result.answers.urgent.noul"
+		return v
+	}
+	noul := *env.Result.Answers.Urgent.Noul
+	kind := ""
+	if env.Result.Answers.Kind != nil {
+		kind = env.Result.Answers.Kind.Choice
+	}
+	if env.Result.Model != "" {
+		v.Model = env.Result.Model
+	}
+	v.Urgent = noul >= 0.5
+	v.Confidence = roundTo(math.Abs(noul-0.5)*2, 4)
+	v.Kind = kind
+	v.Reason = fmt.Sprintf("p=%.2f, kind=%s", noul, kind)
+	if env.Result.Usage != nil && env.Result.Usage.Neurons != nil {
+		cost := roundTo(*env.Result.Usage.Neurons*cloudflareUSDPerNeuron, 8)
 		v.CostUSD = &cost
 	}
 	return v

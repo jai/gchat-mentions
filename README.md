@@ -120,7 +120,7 @@ Settings live in `~/.config/gchat-mentions/config.yaml`. Command-line flags over
 
 ## Urgent mentions
 
-`gchat-mentions` includes optional urgency classification for mentions and direct messages, supporting TypeSafe, Cloudflare Workers AI, and OpenAI-compatible models in single or shadow (multi-provider) mode with rate-limited webhook or fallback command escalation. It runs in `dry-run` mode by default.
+`gchat-mentions` includes optional urgency classification for mentions and direct messages, supporting Cloudflare Clef / Clef-flash, TypeSafe, Cloudflare Workers AI, and OpenAI-compatible models in single or shadow (multi-provider) mode with rate-limited webhook or fallback command escalation. It runs in `dry-run` mode by default.
 
 See [docs/urgent-mentions.md](docs/urgent-mentions.md) for setup, provider configuration, and safe rollout steps.
 

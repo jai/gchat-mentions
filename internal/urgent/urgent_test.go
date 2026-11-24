@@ -184,6 +184,53 @@ func TestClassifyAllProvidersAndRetry(t *testing.T) {
 	}
 }
 
+func TestCloudflareClefAndAutoDetect(t *testing.T) {
+	t.Setenv("TEST_CF_ACCT", "cf-acct")
+	t.Setenv("TEST_CF_TOKEN", "cf-secret")
+
+	var mu sync.Mutex
+	seenPaths := map[string]bool{}
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		bodyBytes, _ := io.ReadAll(req.Body)
+		if !bytes.Contains(bodyBytes, []byte(`"questions"`)) || !bytes.Contains(bodyBytes, []byte(`"noul"`)) {
+			return jsonResponse(400, "expected decision-model payload"), nil
+		}
+		mu.Lock()
+		seenPaths[req.URL.Path] = true
+		mu.Unlock()
+		if strings.HasSuffix(req.URL.Path, "@cf/cloudflare/clef-flash") {
+			return jsonResponse(200, `{"result":{"model":"clef-flash","answers":{"urgent":{"type":"noul","noul":0.92},"kind":{"type":"choice","choice":"production_incident"}},"usage":{"input_tokens":250,"output_tokens":0}},"success":true}`), nil
+		}
+		return jsonResponse(200, `{"result":{"model":"clef","answers":{"urgent":{"type":"noul","noul":0.10},"kind":{"type":"choice","choice":"fyi_or_automation"}},"usage":{"input_tokens":250,"output_tokens":0}},"success":true}`), nil
+	})
+
+	settings, err := ResolveSettings(config.UrgentConfig{
+		Threshold: 0.8,
+		Rule:      "either",
+		Providers: []config.ProviderConfig{
+			{Name: "flash", Type: "cloudflare-clef", AccountIDEnv: "TEST_CF_ACCT", APIKeyEnv: "TEST_CF_TOKEN"},
+			{Name: "full", Type: "cloudflare", Model: "@cf/cloudflare/clef", AccountIDEnv: "TEST_CF_ACCT", APIKeyEnv: "TEST_CF_TOKEN"},
+		},
+	}, "Alice")
+	if err != nil {
+		t.Fatalf("ResolveSettings() error: %v", err)
+	}
+
+	verdicts := ClassifyAll(context.Background(), "sample state", settings, client, time.Millisecond)
+	if len(verdicts) != 2 {
+		t.Fatalf("len(verdicts) = %d, want 2", len(verdicts))
+	}
+	if verdicts[0].Provider != "cloudflare-clef" || verdicts[0].Model != "clef-flash" || !verdicts[0].Urgent || verdicts[0].Confidence != 0.84 {
+		t.Fatalf("unexpected clef-flash verdict: %+v", verdicts[0])
+	}
+	if verdicts[1].Provider != "cloudflare-clef" || verdicts[1].Model != "clef" || verdicts[1].Urgent || verdicts[1].Confidence != 0.8 {
+		t.Fatalf("unexpected clef verdict: %+v", verdicts[1])
+	}
+	if !seenPaths["/client/v4/accounts/cf-acct/ai/run/@cf/cloudflare/clef-flash"] || !seenPaths["/client/v4/accounts/cf-acct/ai/run/@cf/cloudflare/clef"] {
+		t.Fatalf("unexpected Cloudflare paths: %+v", seenPaths)
+	}
+}
+
 func TestQuietHoursAndRateLimit(t *testing.T) {
 	loc, err := time.LoadLocation("Asia/Bangkok")
 	if err != nil {

@@ -16,8 +16,9 @@ Urgent triage is disabled by default. Basic mention polling works without any cl
 
 Configure one provider, or two or more in shadow mode to compare accuracy, latency, and cost:
 
+- `cloudflare-clef`: Cloudflare Workers AI decision models (`@cf/cloudflare/clef-flash` default, `@cf/cloudflare/clef`, or `@cf/cloudflare/clef-omni`). Prefill-only calibrated probabilities (`output_tokens: 0`); `type: cloudflare` with a `@cf/cloudflare/clef*` model also routes here automatically.
 - `typesafe`: TypeSafe SystemOne (`model` defaults to `jev-1.14.0`, `api_key_env` defaults to `TYPESAFE_API_KEY`).
-- `cloudflare`: Cloudflare Workers AI (`model` defaults to `@cf/meta/llama-3.1-8b-instruct-fast`, `account_id_env` defaults to `CLOUDFLARE_ACCOUNT_ID`, `api_key_env` defaults to `CLOUDFLARE_API_TOKEN`).
+- `cloudflare`: Cloudflare Workers AI text-generation models (`model` defaults to `@cf/meta/llama-3.1-8b-instruct-fast`, `account_id_env` defaults to `CLOUDFLARE_ACCOUNT_ID`, `api_key_env` defaults to `CLOUDFLARE_API_TOKEN`).
 - `openai-compatible`: Any Chat Completions endpoint (`url`, `model`, and optional `api_key_env` for OpenAI, OpenRouter, LiteLLM, or local Ollama).
 
 Keep API keys out of `config.yaml`. Point each provider's `env_file` to a `chmod 600` `KEY=VALUE` file, or export the environment variables before running.
