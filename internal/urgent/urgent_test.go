@@ -553,3 +553,92 @@ func TestRunTestOfflineNeverRunsLive(t *testing.T) {
 		t.Fatalf("expected dry-run command action, got %s", string(raw))
 	}
 }
+
+func TestWebhookPayloadTemplateAndURLPath(t *testing.T) {
+	whEnv := filepath.Join(t.TempDir(), "pager.env")
+	if err := os.WriteFile(whEnv, []byte("BASE_URL=https://alerts.example.test/\nAPI_TOKEN=tok-123\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	var gotURL, gotAuth string
+	var gotBody map[string]any
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		gotAuth = req.Header.Get("Authorization")
+		if err := json.NewDecoder(req.Body).Decode(&gotBody); err != nil {
+			return jsonResponse(400, "bad json"), nil
+		}
+		return jsonResponse(201, `{"id":"pa_1"}`), nil
+	})
+
+	settings, err := ResolveSettings(config.UrgentConfig{
+		Mode:     "live",
+		StateDir: t.TempDir(),
+		Escalation: config.EscalationConfig{
+			Webhook: &config.WebhookConfig{
+				EnvFile:   whEnv,
+				URLEnv:    "BASE_URL",
+				URLPath:   "/persistent-alerts",
+				KeyEnv:    "API_TOKEN",
+				KeyHeader: "Authorization",
+				KeyScheme: "Bearer",
+				Payload: map[string]any{
+					"title":              "Urgent Chat: {{sender}} ({{space}})",
+					"body":               "{{excerpt}}\n{{link}}\n({{scores}})",
+					"repeat_minutes":     30,
+					"ignore_quiet_hours": false,
+				},
+				FieldMaxRunes: map[string]int{
+					"title": 40,
+					"body":  500,
+				},
+			},
+		},
+	}, "Alice")
+	if err != nil {
+		t.Fatalf("ResolveSettings: %v", err)
+	}
+
+	rec := VerdictRecord{
+		MessageID:   "spaces/AAA/messages/t1.m9",
+		MessageLink: "https://chat.google.com/room/AAA/t1/m9",
+		SpaceID:     "spaces/AAA",
+		SpaceName:   "Very Long Platform Incident Response Room",
+		SpaceType:   "SPACE",
+		Sender:      "Bob Engineer",
+		TSLocal:     "2026-11-24 18:00 Tue (+07)",
+		Verdicts:    []ProviderVerdict{{Name: "clef", Urgent: true, Confidence: 0.95, Reason: "needs_action=0.98, urgent=0.97"}},
+	}
+
+	// Dry-run writes webhook-payload.json and does not hit network.
+	dryInfo := Escalate(context.Background(), rec, "PROD DOWN\nneed approval now", nil, settings, "dry-run", false, time.Date(2026, 11, 24, 11, 0, 0, 0, time.UTC), client, nil, time.Millisecond)
+	if gotURL != "" {
+		t.Fatalf("dry-run should not send HTTP request, got URL %q", gotURL)
+	}
+	if _, err := os.Stat(filepath.Join(dryInfo.Dir, "webhook-payload.json")); err != nil {
+		t.Fatalf("expected webhook-payload.json in dry-run dir: %v", err)
+	}
+
+	// Live run posts rendered payload to joined URL and honors field_max_runes.
+	liveInfo := Escalate(context.Background(), rec, "PROD DOWN\nneed approval now", nil, settings, "live", false, time.Date(2026, 11, 24, 11, 0, 0, 0, time.UTC), client, nil, time.Millisecond)
+	if gotURL != "https://alerts.example.test/persistent-alerts" {
+		t.Fatalf("got URL %q, want joined URL", gotURL)
+	}
+	if gotAuth != "Bearer tok-123" {
+		t.Fatalf("got auth %q", gotAuth)
+	}
+	if len(liveInfo.Actions) != 1 || liveInfo.Actions[0] != "webhook:posted:201" {
+		t.Fatalf("unexpected actions: %+v", liveInfo.Actions)
+	}
+	title, _ := gotBody["title"].(string)
+	if len([]rune(title)) > 40 || !strings.HasPrefix(title, "Urgent Chat: Bob Engineer") {
+		t.Fatalf("unexpected truncated title (%d runes): %q", len([]rune(title)), title)
+	}
+	body, _ := gotBody["body"].(string)
+	if !strings.Contains(body, "PROD DOWN need approval now") || !strings.Contains(body, rec.MessageLink) || !strings.Contains(body, "needs_action=0.98") {
+		t.Fatalf("unexpected rendered body: %q", body)
+	}
+	if gotBody["repeat_minutes"] != float64(30) || gotBody["ignore_quiet_hours"] != false {
+		t.Fatalf("typed payload fields not preserved: %#v", gotBody)
+	}
+}

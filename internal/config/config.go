@@ -102,13 +102,16 @@ type EscalationConfig struct {
 
 // WebhookConfig configures an HTTP JSON escalation webhook.
 type WebhookConfig struct {
-	URL            string `yaml:"url,omitempty"`
-	URLEnv         string `yaml:"url_env,omitempty"`
-	KeyEnv         string `yaml:"key_env,omitempty"`
-	KeyHeader      string `yaml:"key_header,omitempty"`
-	KeyScheme      string `yaml:"key_scheme,omitempty"`
-	EnvFile        string `yaml:"env_file,omitempty"`
-	TimeoutSeconds int    `yaml:"timeout_seconds,omitempty"`
+	URL            string         `yaml:"url,omitempty"`
+	URLEnv         string         `yaml:"url_env,omitempty"`
+	URLPath        string         `yaml:"url_path,omitempty"`
+	KeyEnv         string         `yaml:"key_env,omitempty"`
+	KeyHeader      string         `yaml:"key_header,omitempty"`
+	KeyScheme      string         `yaml:"key_scheme,omitempty"`
+	EnvFile        string         `yaml:"env_file,omitempty"`
+	TimeoutSeconds int            `yaml:"timeout_seconds,omitempty"`
+	Payload        map[string]any `yaml:"payload,omitempty"`
+	FieldMaxRunes  map[string]int `yaml:"field_max_runes,omitempty"`
 }
 
 // CommandConfig configures an optional fallback command (e.g. a read-only agent).

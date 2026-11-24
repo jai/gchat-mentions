@@ -2,10 +2,12 @@ package urgent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,52 +250,44 @@ func Escalate(
 			info.Actions = append(info.Actions, "webhook:cred-error:"+TruncateRunes(err.Error(), 120))
 		} else if url == "" {
 			info.Actions = append(info.Actions, "webhook:skipped-no-credentials")
-		} else if !live {
-			info.Actions = append(info.Actions, "webhook:dry-run-would-post")
-			delivered = true
 		} else {
-			payload := map[string]any{
-				"source":         "gchat-mentions",
-				"message_id":     rec.MessageID,
-				"message_link":   rec.MessageLink,
-				"space_id":       rec.SpaceID,
-				"space_name":     rec.SpaceName,
-				"space_type":     rec.SpaceType,
-				"sender":         rec.Sender,
-				"text":           TruncateRunes(targetText, 1500),
-				"context":        ctxMsgs,
-				"verdicts":       rec.Verdicts,
-				"ts_local":       rec.TSLocal,
-				"paging_allowed": allowPage,
-			}
-			headers := map[string]string{}
-			if key != "" {
-				hdr := strings.TrimSpace(wh.KeyHeader)
-				if hdr == "" {
-					hdr = "Authorization"
+			payload := buildWebhookPayload(wh, rec, targetText, ctxMsgs, allowPage)
+			if !live {
+				if raw, mErr := json.MarshalIndent(payload, "", "  "); mErr == nil {
+					_ = os.WriteFile(filepath.Join(edir, "webhook-payload.json"), append(raw, '\n'), 0o600)
 				}
-				scheme := strings.TrimSpace(wh.KeyScheme)
-				if scheme == "" && strings.EqualFold(hdr, "Authorization") {
-					scheme = "Bearer"
-				}
-				if scheme != "" {
-					headers[hdr] = scheme + " " + key
-				} else {
-					headers[hdr] = key
-				}
-			}
-			timeout := DefaultHTTPTimeout
-			if wh.TimeoutSeconds > 0 {
-				timeout = time.Duration(wh.TimeoutSeconds) * time.Second
-			}
-			whCtx, cancel := context.WithTimeout(ctx, timeout)
-			status, _, err := postJSON(whCtx, client, url, headers, payload, retryDelay)
-			cancel()
-			if err != nil {
-				info.Actions = append(info.Actions, "webhook:error:"+TruncateRunes(err.Error(), 120))
+				info.Actions = append(info.Actions, "webhook:dry-run-would-post")
+				delivered = true
 			} else {
-				delivered = status >= 200 && status < 300
-				info.Actions = append(info.Actions, fmt.Sprintf("webhook:posted:%d", status))
+				headers := map[string]string{}
+				if key != "" {
+					hdr := strings.TrimSpace(wh.KeyHeader)
+					if hdr == "" {
+						hdr = "Authorization"
+					}
+					scheme := strings.TrimSpace(wh.KeyScheme)
+					if scheme == "" && strings.EqualFold(hdr, "Authorization") {
+						scheme = "Bearer"
+					}
+					if scheme != "" {
+						headers[hdr] = scheme + " " + key
+					} else {
+						headers[hdr] = key
+					}
+				}
+				timeout := DefaultHTTPTimeout
+				if wh.TimeoutSeconds > 0 {
+					timeout = time.Duration(wh.TimeoutSeconds) * time.Second
+				}
+				whCtx, cancel := context.WithTimeout(ctx, timeout)
+				status, _, err := postJSON(whCtx, client, url, headers, payload, retryDelay)
+				cancel()
+				if err != nil {
+					info.Actions = append(info.Actions, "webhook:error:"+TruncateRunes(err.Error(), 120))
+				} else {
+					delivered = status >= 200 && status < 300
+					info.Actions = append(info.Actions, fmt.Sprintf("webhook:posted:%d", status))
+				}
 			}
 		}
 	}
@@ -347,6 +341,11 @@ func resolveWebhookCreds(wh *config.WebhookConfig) (string, string, error) {
 			return "", "", err
 		}
 	}
+	if url != "" {
+		if path := strings.TrimSpace(wh.URLPath); path != "" {
+			url = strings.TrimRight(url, "/") + "/" + strings.TrimLeft(path, "/")
+		}
+	}
 	keyEnv := strings.TrimSpace(wh.KeyEnv)
 	if keyEnv == "" {
 		keyEnv = "KEY"
@@ -356,6 +355,126 @@ func resolveWebhookCreds(wh *config.WebhookConfig) (string, string, error) {
 		return "", "", err
 	}
 	return url, key, nil
+}
+
+func buildWebhookPayload(wh *config.WebhookConfig, rec VerdictRecord, targetText string, ctxMsgs []ContextMessage, allowPage bool) map[string]any {
+	if wh == nil || len(wh.Payload) == 0 {
+		return map[string]any{
+			"source":         "gchat-mentions",
+			"message_id":     rec.MessageID,
+			"message_link":   rec.MessageLink,
+			"space_id":       rec.SpaceID,
+			"space_name":     rec.SpaceName,
+			"space_type":     rec.SpaceType,
+			"sender":         rec.Sender,
+			"text":           TruncateRunes(targetText, 1500),
+			"context":        ctxMsgs,
+			"verdicts":       rec.Verdicts,
+			"ts_local":       rec.TSLocal,
+			"paging_allowed": allowPage,
+		}
+	}
+
+	sender := strings.TrimSpace(rec.Sender)
+	if sender == "" {
+		sender = "Someone"
+	}
+	space := strings.TrimSpace(rec.SpaceName)
+	if space == "" {
+		switch rec.SpaceType {
+		case "DIRECT_MESSAGE":
+			space = "Direct message"
+		case "GROUP_CHAT":
+			space = "Group chat"
+		default:
+			if strings.TrimSpace(rec.SpaceID) != "" {
+				space = rec.SpaceID
+			} else {
+				space = "Chat"
+			}
+		}
+	}
+	collapsed := collapseWhitespace(targetText)
+	vars := map[string]string{
+		"{{sender}}":         sender,
+		"{{space}}":          space,
+		"{{space_id}}":       rec.SpaceID,
+		"{{space_type}}":     rec.SpaceType,
+		"{{text}}":           TruncateRunes(collapsed, 1500),
+		"{{excerpt}}":        TruncateRunes(collapsed, 240),
+		"{{link}}":           rec.MessageLink,
+		"{{message_id}}":     rec.MessageID,
+		"{{ts_local}}":       rec.TSLocal,
+		"{{scores}}":         formatVerdictScores(rec.Verdicts),
+		"{{paging_allowed}}": strconv.FormatBool(allowPage),
+	}
+
+	rendered := make(map[string]any, len(wh.Payload))
+	for k, v := range wh.Payload {
+		val := renderWebhookValue(v, vars)
+		if s, ok := val.(string); ok {
+			if maxLen := wh.FieldMaxRunes[k]; maxLen > 0 {
+				s = TruncateRunes(s, maxLen)
+			}
+			val = s
+		}
+		rendered[k] = val
+	}
+	return rendered
+}
+
+func renderWebhookValue(v any, vars map[string]string) any {
+	switch tv := v.(type) {
+	case string:
+		out := tv
+		for k, val := range vars {
+			out = strings.ReplaceAll(out, k, val)
+		}
+		return out
+	case map[string]any:
+		cp := make(map[string]any, len(tv))
+		for k, val := range tv {
+			cp[k] = renderWebhookValue(val, vars)
+		}
+		return cp
+	case map[any]any:
+		cp := make(map[string]any, len(tv))
+		for k, val := range tv {
+			cp[fmt.Sprint(k)] = renderWebhookValue(val, vars)
+		}
+		return cp
+	case []any:
+		cp := make([]any, len(tv))
+		for i, val := range tv {
+			cp[i] = renderWebhookValue(val, vars)
+		}
+		return cp
+	default:
+		return v
+	}
+}
+
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func formatVerdictScores(verdicts []ProviderVerdict) string {
+	var parts []string
+	for _, v := range verdicts {
+		if v.Error != "" {
+			continue
+		}
+		detail := strings.TrimSpace(v.Reason)
+		if detail == "" {
+			detail = fmt.Sprintf("urgent=%t confidence=%.2f", v.Urgent, v.Confidence)
+		}
+		if v.Name != "" && len(verdicts) > 1 {
+			parts = append(parts, v.Name+": "+detail)
+		} else {
+			parts = append(parts, detail)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func substituteArgv(template []string, brief, briefPath string) []string {

@@ -101,8 +101,21 @@ urgent:
   escalation:
     webhook:
       env_file: ~/.credentials/urgent-webhook
+      url_env: URL
+      # url_path: /alerts         # Optional path appended to the resolved base URL
+      key_env: KEY
       key_header: Authorization
       key_scheme: Bearer
+      # Optional custom JSON payload template (omit to send the default full event object).
+      # String placeholders: {{sender}}, {{space}}, {{space_id}}, {{space_type}},
+      # {{text}}, {{excerpt}}, {{link}}, {{message_id}}, {{ts_local}}, {{scores}}, {{paging_allowed}}.
+      # payload:
+      #   title: "Urgent Chat: {{sender}} ({{space}})"
+      #   body: "{{excerpt}}\n{{link}}\n({{scores}})"
+      #   repeat_minutes: 30
+      # field_max_runes:
+      #   title: 100
+      #   body: 500
     command:
       argv:
         - my-readonly-agent
