@@ -109,9 +109,11 @@ urgent:
       # Optional custom JSON payload template (omit to send the default full event object).
       # String placeholders: {{sender}}, {{space}}, {{space_id}}, {{space_type}},
       # {{text}}, {{excerpt}}, {{link}}, {{message_id}}, {{ts_local}}, {{scores}}, {{paging_allowed}}.
+      # {{scores}} is the classifier's internal scoring: keep it out of text a person reads
+      # (verdicts.jsonl already records it for every mention).
       # payload:
       #   title: "Urgent Chat: {{sender}} ({{space}})"
-      #   body: "{{excerpt}}\n{{link}}\n({{scores}})"
+      #   body: "{{excerpt}}\n{{link}}"
       #   repeat_minutes: 30
       # field_max_runes:
       #   title: 100
