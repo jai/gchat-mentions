@@ -34,9 +34,9 @@ const (
 func DefaultUrgencyDefinition(userName, userContext string) string {
 	who := formatRecipient(userName, userContext)
 	return fmt.Sprintf(
-		"Urgent means the request for %s is time-sensitive and needs attention soon "+
-			"(active outage or incident, someone actively blocked, or a short deadline). "+
-			"Not urgent: routine async requests, informational updates, digests, or already-resolved threads.",
+		"Urgent means target_message requires %s to respond immediately, worth interrupting a meeting right now "+
+			"(active production outage or customer-facing incident, live security or fraud emergency, or a hard same-hour deadline where waiting causes immediate harm). "+
+			"Not urgent: routine PR reviews or CI overrides, IT access requests, roadmap or migration timelines days or weeks away, status updates, or async decisions.",
 		who,
 	)
 }
@@ -78,12 +78,15 @@ func DefaultQuestions(userName, userContext string) map[string]config.QuestionCo
 		"urgent": {
 			Type: "noul",
 			Instructions: fmt.Sprintf(
-				"For %s, would the request in target_message generally be considered urgent?",
+				"Does target_message require %s to respond immediately (worth interrupting a meeting or focus block right now)?",
 				recipient,
 			),
 			Criteria: map[string]any{
-				"true":  "Time-sensitive issue that needs attention soon (active outage or incident, someone actively blocked, or a short deadline).",
-				"false": "Can wait for normal async review, routine check-in, or informational only.",
+				"true": fmt.Sprintf(
+					"Needs %s's immediate attention right now, worth interrupting a meeting: active production outage or customer-facing incident, live security or fraud emergency, or a hard same-hour deadline where waiting causes immediate harm.",
+					who,
+				),
+				"false": "Can wait a few hours or until a scheduled meeting later today: routine PR reviews or CI overrides, IT access requests, roadmap or migration timelines days or weeks away, status updates, or async decisions.",
 			},
 		},
 	}

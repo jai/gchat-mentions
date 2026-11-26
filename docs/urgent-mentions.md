@@ -52,13 +52,18 @@ questions:
   urgent:
     type: noul
     instructions: >-
-      For {{recipient}}, would the request in target_message generally be considered urgent?
+      Does target_message require {{recipient}} to respond immediately (worth
+      interrupting a meeting or focus block right now)?
     criteria:
       "true": >-
-        Time-sensitive issue that needs attention soon (active outage or incident,
-        someone actively blocked, or a short deadline).
+        Needs {{user_name}}'s immediate attention right now, worth interrupting
+        a meeting: active production outage or customer-facing incident, live
+        security or fraud emergency, or a hard same-hour deadline where waiting
+        causes immediate harm.
       "false": >-
-        Can wait for normal async review, routine check-in, or informational only.
+        Can wait a few hours or until a scheduled meeting later today: routine
+        PR reviews or CI overrides, IT access requests, roadmap or migration
+        timelines days or weeks away, status updates, or async decisions.
 ```
 
 ## Example configuration
